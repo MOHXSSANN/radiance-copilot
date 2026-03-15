@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Local config (contains personal paths and badge number)
+radiance_copilot.cfg
+
+# Extracted case data (runtime output, may contain sensitive info)
+.extracted_data/
+*/.extracted_data/
+
+# Claude Code settings
+.claude/
+
+# Old/deprecated files
+old temp/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

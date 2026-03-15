@@ -1,0 +1,680 @@
+# fill_k138_notice.py
+# Version 0.2.3 (2025/12/08)
+# Same base coordinates; clarified fine-tuning via GLOBAL_DX/DY and OFFSETS, includes Seizing Officer.
+
+#region fill_k138_notice.py fill K138 form with dummy data
+
+import io
+import csv
+from PyPDF2 import PdfReader, PdfWriter
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase.pdfmetrics import stringWidth
+
+try:
+    import fitz  # PyMuPDF
+    HAVE_PYMUPDF = True
+except ImportError:
+    HAVE_PYMUPDF = False
+
+# ---------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------
+
+TEMPLATE_PDF = r"K138 Stupefiant-Others - TEMPLATE-dummy.pdf"
+OUTPUT_PDF   = r"K138_filled_dummy.pdf"
+
+# Form type notices to append to description block
+CANNABIS_NOTICE = (
+    "\n\n(Please note: Under the Cannabis Act, the above item is illegal to transport, import or export across Canada's borders, including by mail or courier. For more information please visit this website: https://www.canada.ca/en/services/health/campaigns/cannabis/border.html)\n"
+    "-------------------------------------------------------------------------------------------------------\n"
+    "(Attention : La Loi sur le cannabis interdit d'importer l'article ci-dessus au Canada ou de l'en exporter, y compris par la poste ou par messagerie. Pour en savoir plus : https://www.canada.ca/fr/services/sante/campagnes/cannabis/frontiere.html)"
+)
+
+KNIFE_NOTICE = (
+    "\n\nCENTRIFUGAL KNIFE AS PER MEMORANDUM D19-13-2\n"
+    "COUTEAU CENTRIFUGE AU MÉMORANDUM D19-13-2"
+)
+
+# Global nudge (if everything is slightly off in one direction)
+# 1 point ≈ 0.35 mm (2 mm ≈ 6 points).
+# Positive DX = move right; negative = move left.
+# Positive DY = move up;   negative = move down.
+
+# To find these values, Dmitry used k138_offset_tuner_app.py # Version 0.1.2 (2025/12/08)
+GLOBAL_DX = -20
+GLOBAL_DY = -40
+
+# Per-field offsets (Dmitry 2026/02): fine-tune placement on K138 form
+OFFSETS = {
+    "notice_to":       (12, 20),    # Shift right to avoid first-letter clipping
+    "notice_date":     (0, 20),
+    "seizure_date":    (20, -20),   # was (20, 0)
+    "seizure_year_L":  (0, -20),    # not used – always "20" as in 2026
+    "seizure_year_R":  (0, -20),    # use "26"
+    "seizure_location":(-20, -62),  # Move a bit further up
+    "description":     (-30, -30),  # Shift right to avoid clipped first character
+    "seizing_officer": (120, 90),
+}
+
+# GLOBAL_DX = 0
+# GLOBAL_DY = 0
+
+# # Per-field extra offsets (for local fine-tuning)
+# # Example: OFFSETS["notice_to"] = (-5, +3)  moves the address
+# # 5 points left and 3 points up, on top of GLOBAL_DX/DY.
+# OFFSETS = {
+#     "notice_to":       (0,   0),
+#     "notice_date":     (0,   0),
+#     "seizure_date":    (0,   0),
+#     "seizure_year_L":  (0,   0),
+#     "seizure_year_R":  (0,   0),
+#     "seizure_location":(0,   0),
+#     "description":     (0,   0),
+#     "seizing_officer": (0,   0),
+# }
+
+# Dummy data to fill (later you can load/replace from CSV)
+dummy_data = {
+    # NOTICE OF SEIZURE – To:
+    "notice_to": (
+        "John Doe\n"
+        "123 RUE DUMMY, APT 1234\n"
+        "MONTREAL QC A1B 2C3"
+    ),
+
+    # AVIS DE SAISIE – Date
+    "notice_date": "2025-11-25",
+
+    # This refers to goods seized/detained on ...
+    "seizure_date_line": "16 NOVEMBER / 16 NOVEMBRE",
+    "seizure_year_left": "20",
+    "seizure_year_right": "25",
+
+    # ... at
+    "seizure_location": (
+        "MONTREAL POSTAL FACILITY, ETC LEO-BLANCHETTE / POSTAL CUSTOMS"
+    ),
+
+    # Description block
+    "description_block": (
+        "INVENTORY NO / NO. D'INVENTAIRE: ABXXXYYYZZZCO\n\n"
+        "DECLARED/DÉCLARÉ: N/A\n\n"
+        "ITEM SEIZED / MARCHANDISE SAISIE: "
+        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.\n\n"
+        "SEIZURE NUMBER / NUMÉRO DE SAISIE: 3952-25-1234"
+    ),
+
+    # Seizing Officer (bottom of page)
+    "seizing_officer": "12345",
+}
+
+# ---------------------------------------------------------------------
+# Optional: future CSV loader
+# ---------------------------------------------------------------------
+
+# Dmitry: replaced vertical to horizontal 
+# def load_data_from_csv(csv_path: str) -> dict:
+#     """
+#     Load field values from a CSV file.
+#     Expected format: one row, with columns matching keys in dummy_data
+#     (e.g., notice_to, notice_date, seizure_date_line, etc.).
+#     """
+#     with open(csv_path, newline="", encoding="utf-8") as f:
+#         reader = csv.DictReader(f)
+#         for row in reader:
+#             return row  # first row only
+#     return {}
+
+def load_data_from_csv(csv_path: str) -> dict:
+    """
+    Load key/value CSV where each row is: field,value
+    """
+    data = {}
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            data[row["field"]] = row["value"]
+
+    # Reconstruct multiline fields (use .get to avoid KeyError on missing keys)
+    data["notice_to"] = (data.get("notice_to") or "").replace(" | ", "\n")
+
+    # Build description block from item only; append legal notice exactly once from CSV (no duplication)
+    data["description_block"] = (
+        f"INVENTORY NO / NO. D'INVENTAIRE: {data.get('description_inventory', '')}\n\n"
+        f"DECLARED/DÉCLARÉ: {data.get('description_declared', '')}\n\n"
+        f"ITEM SEIZED / MARCHANDISE SAISIE: {data.get('description_item', '')}\n\n"
+        f"SEIZURE NUMBER / NUMÉRO DE SAISIE: {data.get('description_seizure_number', '')}"
+    )
+    legal = (data.get("legal_notice") or "").strip()
+    if legal:
+        data["description_block"] = data["description_block"] + "\n\n" + legal
+
+    return data
+
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+def detect_form_type(template_path: str) -> str:
+    """
+    Detect the form type from the template PDF filename.
+    Returns: "Cannabis-Stupefiant", "Knives-Arms", or "Stupefiant-Others"
+    """
+    template_lower = template_path.lower()
+    if "cannabis" in template_lower:
+        return "Cannabis-Stupefiant"
+    elif "knife" in template_lower or "knives" in template_lower or "arms" in template_lower:
+        return "Knives-Arms"
+    else:
+        return "Stupefiant-Others"
+
+
+def detect_description_box_dimensions(template_path: str) -> tuple[float, float, float, float] | None:
+    """
+    Detect the description box dimensions from the PDF template.
+    Returns (x_left, y_bottom, x_right, y_top) in ReportLab coordinates (bottom-left origin),
+    or None if detection fails.
+    
+    In PyMuPDF: origin is top-left, y=0 at top, y increases downward
+    In ReportLab: origin is bottom-left, y=0 at bottom, y increases upward
+    Conversion: reportlab_y = page_height - pymupdf_y
+    """
+    if not HAVE_PYMUPDF:
+        return None
+    
+    try:
+        doc = fitz.open(template_path)
+        page = doc[0]
+        page_height = page.rect.height
+        
+        # Method 1: Look for form fields/widgets (best method)
+        # Try widgets first (more reliable)
+        for widget in page.widgets():
+            field_name = widget.field_name
+            rect = widget.rect
+            # Check if this is the description field (often named "C" or similar)
+            # Description box should be large (width > 400, height > 100)
+            box_width = rect.width
+            box_height = rect.height
+            if box_width > 400 and box_height > 100 and rect.y0 > 300 and rect.y0 < 600:
+                # Convert from PyMuPDF (top-left origin) to ReportLab (bottom-left origin)
+                x_left = rect.x0
+                x_right = rect.x1
+                # In PyMuPDF: rect.y0 is top (smaller y), rect.y1 is bottom (larger y)
+                # In ReportLab: we want y_bottom (smaller) and y_top (larger)
+                y_bottom_reportlab = page_height - rect.y1  # PyMuPDF bottom -> ReportLab bottom
+                y_top_reportlab = page_height - rect.y0     # PyMuPDF top -> ReportLab top
+                doc.close()
+                print(f"Found form field '{field_name}': {rect}")
+                print(f"  PyMuPDF coords: top={rect.y0:.1f}, bottom={rect.y1:.1f}")
+                print(f"  ReportLab coords: y_bottom={y_bottom_reportlab:.1f}, y_top={y_top_reportlab:.1f}")
+                return (x_left, y_bottom_reportlab, x_right, y_top_reportlab)
+        
+        # Also check annotations as fallback
+        for annot in page.annots():
+            if annot.type[1] == "Widget":  # Form field
+                rect = annot.rect
+                box_width = rect.width
+                box_height = rect.height
+                if box_width > 400 and box_height > 100 and rect.y0 > 300 and rect.y0 < 600:
+                    x_left = rect.x0
+                    x_right = rect.x1
+                    y_bottom_reportlab = page_height - rect.y1
+                    y_top_reportlab = page_height - rect.y0
+                    doc.close()
+                    print(f"Found annotation: {rect}")
+                    return (x_left, y_bottom_reportlab, x_right, y_top_reportlab)
+        
+        # Method 2: Look for text that indicates description box location
+        # Search for keywords like "ITEM SEIZED" or "MARCHANDISE SAISIE"
+        words = page.get_text("words")
+        # Find the specific "ITEM SEIZED / MARCHANDISE SAISIE" label (usually around y=440-460)
+        # Look for "ITEM" and "SEIZED" that are close together horizontally
+        item_seized_words = []
+        for w in words:
+            text = w[4].upper()
+            if "ITEM" in text or ("SEIZED" in text and "/" not in text):
+                # Check if there's a nearby "SEIZED" or "MARCHANDISE"
+                x0, y0, x1, y1 = w[0], w[1], w[2], w[3]
+                # The label should be in the middle-upper part of page (around y=440-470)
+                if 400 < y0 < 500:
+                    item_seized_words.append(w)
+        
+        if item_seized_words:
+            # Use the bottom-most edge of these label words
+            max_y1_pymupdf = max(w[3] for w in item_seized_words)  # Bottom edge of label
+            min_x = min(w[0] for w in item_seized_words)
+            max_x = max(w[2] for w in item_seized_words)
+            
+            # Description box typically starts below this text
+            # In PyMuPDF: y increases downward, so larger y = lower on page
+            box_top_pymupdf = max_y1_pymupdf + 25  # Just below keywords
+            # Estimate box height: typically 250-300 points
+            box_height = 280
+            box_bottom_pymupdf = box_top_pymupdf + box_height
+            
+            # Convert to ReportLab coordinates
+            # ReportLab: y=0 at bottom, y increases upward
+            # PyMuPDF: y=0 at top, y increases downward
+            # Conversion: reportlab_y = page_height - pymupdf_y
+            y_top_reportlab = page_height - box_top_pymupdf    # Top of box in ReportLab
+            y_bottom_reportlab = page_height - box_bottom_pymupdf  # Bottom of box in ReportLab
+            
+            # Estimate box extends from left margin to near right margin
+            x_left = 85  # Left margin  
+            x_right = 520  # Right edge of box (conservative estimate)
+            
+            # Ensure box doesn't extend beyond page
+            if box_bottom_pymupdf > page_height:
+                box_bottom_pymupdf = page_height - 20  # Leave small margin
+                box_height = box_bottom_pymupdf - box_top_pymupdf
+            
+            # Convert to ReportLab coordinates
+            y_top_reportlab = page_height - box_top_pymupdf    # Top of box in ReportLab
+            y_bottom_reportlab = page_height - box_bottom_pymupdf  # Bottom of box in ReportLab
+            
+            doc.close()
+            print(f"Detected from text keywords: 'ITEM SEIZED' label at PyMuPDF y={max_y1_pymupdf:.1f}")
+            print(f"Box extends from PyMuPDF y={box_top_pymupdf:.1f} to {box_bottom_pymupdf:.1f} (height={box_height:.1f})")
+            print(f"ReportLab coords: y_bottom={y_bottom_reportlab:.1f}, y_top={y_top_reportlab:.1f}")
+            return (x_left, y_bottom_reportlab, x_right, y_top_reportlab)
+        
+        # Fallback: if we found desc_words but not item_seized_words, use all desc_words
+        desc_keywords = ["ITEM", "SEIZED", "MARCHANDISE", "SAISIE"]
+        desc_words = [w for w in words if any(kw.lower() in w[4].lower() for kw in desc_keywords)]
+        
+        if desc_words:
+            # Filter to middle section (likely the label)
+            mid_words = [w for w in desc_words if 400 < w[1] < 500]
+            if mid_words:
+                max_y1_pymupdf = max(w[3] for w in mid_words)
+                box_top_pymupdf = max_y1_pymupdf + 25
+                box_height = 280
+                box_bottom_pymupdf = min(box_top_pymupdf + box_height, page_height - 20)
+                
+                y_top_reportlab = page_height - box_top_pymupdf
+                y_bottom_reportlab = page_height - box_bottom_pymupdf
+                x_left = 85
+                x_right = 520
+                
+                doc.close()
+                print(f"Detected using fallback method")
+                return (x_left, y_bottom_reportlab, x_right, y_top_reportlab)
+        
+        doc.close()
+        return None
+    except Exception as e:
+        print(f"Warning: Could not detect box dimensions: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def wrap_text_measured(text: str, max_width_points: float, font_name: str = "Helvetica", font_size: int = 9) -> list[str]:
+    """
+    Wrap text using actual ReportLab text width measurement to ensure it fits within bounds.
+    
+    Args:
+        text: Text to wrap
+        max_width_points: Maximum width in points
+        font_name: Font name (default "Helvetica")
+        font_size: Font size (default 9)
+    
+    Returns:
+        List of wrapped lines
+    """
+    lines = []
+    words = text.split(' ')
+    current_line = []
+    
+    for word in words:
+        # Test if adding this word would exceed the width
+        test_line = ' '.join(current_line + [word]) if current_line else word
+        test_width = stringWidth(test_line, font_name, font_size)
+        
+        if test_width <= max_width_points:
+            current_line.append(word)
+        else:
+            # Current line is full, save it
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Check if the word itself is longer than max width
+            word_width = stringWidth(word, font_name, font_size)
+            if word_width > max_width_points:
+                # Word is too long, split it character by character
+                char_line = ""
+                for char in word:
+                    test_char_line = char_line + char
+                    if stringWidth(test_char_line, font_name, font_size) <= max_width_points:
+                        char_line = test_char_line
+                    else:
+                        if char_line:
+                            lines.append(char_line)
+                        char_line = char
+                current_line = [char_line] if char_line else []
+            else:
+                current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines if lines else [text]
+
+
+def apply_offsets(x: float, y: float, key: str) -> tuple[float, float]:
+    """
+    Apply GLOBAL_DX/DY and per-field OFFSETS[key] to a base (x, y).
+    """
+    dx, dy = OFFSETS.get(key, (0, 0))
+    return x + GLOBAL_DX + dx, y + GLOBAL_DY + dy
+
+
+# ---------------------------------------------------------------------
+# Overlay creation
+# ---------------------------------------------------------------------
+
+def create_overlay_page(width: float, height: float, data: dict, form_type: str = None, box_dimensions: tuple[float, float, float, float] | None = None):
+    """
+    Create a single-page PDF in memory with the text overlay for the K138.
+
+    Coordinates tuned for a portrait letter-size K138 form (≈612 x 792).
+    Adjust either:
+      - GLOBAL_DX / GLOBAL_DY to move everything,
+      - OFFSETS[...] entries for each field.
+    
+    Args:
+        width: Page width
+        height: Page height
+        data: Dictionary containing form data
+        form_type: Form type ("Cannabis-Stupefiant", "Knives-Arms", or "Stupefiant-Others")
+        box_dimensions: (x_left, y_bottom, x_right, y_top) of description box, or None to use defaults
+    """
+    packet = io.BytesIO()
+    c = canvas.Canvas(packet, pagesize=(width, height))
+    c.setFont("Helvetica", 9)
+
+    # NOTE: origin (0,0) is bottom-left. height ~ 792 for letter.
+    
+    # Prepare description block (notice text is already included from .txt files via description_item)
+    description_block = data.get("description_block", "")
+    # No need to add notices here - they're already included in description_item from the .txt files
+
+    # --------------------------------------------------
+    # 1) "To:" block (name + address)
+    # --------------------------------------------------
+    base_x_to = 100
+    base_y_to_top = height - 210    # ~582 on a 792-pt page
+
+    x_to, y_to_top = apply_offsets(base_x_to, base_y_to_top, "notice_to")
+    for idx, line in enumerate(data["notice_to"].split("\n")):
+        c.drawString(x_to, y_to_top - 11 * idx, line)  # Reduced from 13 to 11
+
+    # --------------------------------------------------
+    # 2) "Date" (right header area) – Avis de saisie = date letter was generated
+    # --------------------------------------------------
+    base_x_date = width - 200
+    base_y_date = base_y_to_top
+    x_date, y_date = apply_offsets(base_x_date, base_y_date, "notice_date")
+    # Format notice_date as DD MONTH YYYY for display (e.g. 05 February 2026)
+    _nd = data.get("notice_date", "")
+    if _nd:
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(_nd, "%Y-%m-%d")
+            _nd_display = dt.strftime("%d %B %Y")
+        except Exception:
+            _nd_display = _nd
+    else:
+        _nd_display = ""
+    c.drawString(x_date, y_date, _nd_display)
+
+    # --------------------------------------------------
+    # 3) Seizure date (On / le)
+    # --------------------------------------------------
+    base_x_on = 170
+    base_y_on = height - 275  # Moved up from 295 (20 points closer to top)
+
+    x_on, y_on = apply_offsets(base_x_on, base_y_on, "seizure_date")
+    c.drawString(x_on, y_on, data["seizure_date_line"])
+
+    # Year split "20" "25"
+    base_x_year_left = base_x_on + 200
+    base_y_year = base_y_on
+
+    x_year_left, y_year_left = apply_offsets(base_x_year_left, base_y_year, "seizure_year_L")
+    x_year_right, y_year_right = apply_offsets(base_x_year_left + 20, base_y_year, "seizure_year_R")
+
+    # c.drawString(x_year_left,  y_year_left,  data["seizure_year_left"]) Dmitry
+    c.drawString(x_year_right, y_year_right, data["seizure_year_right"])
+
+    # --------------------------------------------------
+    # 4) Location ("at" / à) – MONTREAL POSTAL FACILITY...
+    # --------------------------------------------------
+    base_x_at = base_x_on
+    base_y_at = base_y_on - 30  # Moved down (was 15) so Montreal text sits lower
+
+    x_at, y_at = apply_offsets(base_x_at, base_y_at, "seizure_location")
+    c.drawString(x_at, y_at, data["seizure_location"])
+
+    # --------------------------------------------------
+    # 5) Description block (large text area mid-page)
+    # --------------------------------------------------
+    # Use detected box dimensions if available, otherwise fall back to defaults
+    if box_dimensions:
+        x_left_box, y_bottom_box, x_right_box, y_top_box = box_dimensions
+        # Use the detected box boundaries directly
+        left_padding = 10
+        right_padding = 8
+        x_desc = x_left_box + left_padding
+        # Add top padding to avoid overlapping with existing text in top-left corner
+        top_padding = 15  # Points to move first line down
+        y_desc_top = y_top_box - top_padding
+        max_width_points = (x_right_box - x_left_box) - left_padding - right_padding
+    else:
+        # Fallback to manual calculation
+        base_x_desc = 90
+        base_y_desc_top = base_y_at - 50  # Reduced from 70 to 50 (closer to location)
+        
+        x_desc, y_desc_top = apply_offsets(base_x_desc, base_y_desc_top, "description")
+        
+        # Determine right edge of description box
+        # Page width is 612, leave small margin on right (around 20-25 points)
+        right_edge_x = 590  # Using more of the available box width
+        max_width_points = right_edge_x - x_desc
+    
+    # Detect if we're in the cannabis notice section (for smaller font)
+    is_cannabis_notice = form_type == "Cannabis-Stupefiant"
+    notice_start_markers = ["(Please note:", "(Attention :"]
+    in_notice_section = False
+    
+    # Process description block with text wrapping
+    line_idx = 0
+    for original_line in description_block.split("\n"):
+        if not original_line.strip():
+            # Empty line - skip to next line
+            line_idx += 1
+            continue
+        
+        # Detect start of cannabis notice
+        if is_cannabis_notice and any(marker in original_line for marker in notice_start_markers):
+            in_notice_section = True
+        
+        # Use smaller font for cannabis notice (7pt instead of 9pt)
+        if in_notice_section and is_cannabis_notice:
+            font_size_for_line = 7
+            line_spacing = 10# Tighter spacing for smaller font - moved up
+        else:
+            font_size_for_line = 9
+            line_spacing = 12
+        
+        # Set font size for this line
+        c.setFont("Helvetica", font_size_for_line)
+        
+        # Wrap long lines using actual text width measurement
+        wrapped_lines = wrap_text_measured(original_line, max_width_points, "Helvetica", font_size_for_line)
+        for wrapped_line in wrapped_lines:
+            # Double-check the line fits before drawing
+            line_width = stringWidth(wrapped_line, "Helvetica", font_size_for_line)
+            if line_width > max_width_points:
+                # If somehow still too wide, truncate
+                # This shouldn't happen but safety check
+                while line_width > max_width_points and wrapped_line:
+                    wrapped_line = wrapped_line[:-1]
+                    line_width = stringWidth(wrapped_line, "Helvetica", font_size_for_line)
+            
+            c.drawString(x_desc, y_desc_top - line_spacing * line_idx, wrapped_line)
+            line_idx += 1
+    
+    # Reset font to default for remaining fields
+    c.setFont("Helvetica", 9)
+
+    # --------------------------------------------------
+    # 6) Seizing Officer (bottom area)
+    # --------------------------------------------------
+    base_x_officer = 165
+    base_y_officer = 155
+
+    x_officer, y_officer = apply_offsets(base_x_officer, base_y_officer, "seizing_officer")
+    c.drawString(x_officer, y_officer, data["seizing_officer"])
+
+    # Finish overlay
+    c.save()
+    packet.seek(0)
+    overlay_pdf = PdfReader(packet)
+    return overlay_pdf.pages[0]
+
+
+# ---------------------------------------------------------------------
+# Main routine
+# ---------------------------------------------------------------------
+
+def fill_k138(
+    template_path: str = TEMPLATE_PDF,
+    output_path: str = OUTPUT_PDF,
+    use_csv: bool = False,
+    csv_path: str | None = None,
+    form_type: str | None = None,
+):
+    """
+    Load the K138 template, overlay the dummy (or CSV) data on each page,
+    and write out a new filled PDF.
+
+    All pages of the K138 (client copy, recourse copy, office copy, etc.)
+    are filled identically.
+    
+    Args:
+        template_path: Path to the K138 template PDF
+        output_path: Path where the filled PDF will be saved
+        use_csv: Whether to load data from CSV
+        csv_path: Path to CSV file (if use_csv is True)
+        form_type: Form type ("Cannabis-Stupefiant", "Knives-Arms", or "Stupefiant-Others").
+                   If None, auto-detects from template_path filename.
+    """
+
+    # Detect form type if not provided
+    if form_type is None:
+        form_type = detect_form_type(template_path)
+    else:
+        # Normalize form type
+        form_type_lower = form_type.lower()
+        if "cannabis" in form_type_lower:
+            form_type = "Cannabis-Stupefiant"
+        elif "knife" in form_type_lower or "knives" in form_type_lower or "arms" in form_type_lower:
+            form_type = "Knives-Arms"
+        else:
+            form_type = "Stupefiant-Others"
+
+    # Decide data source
+    if use_csv and csv_path:
+        data_from_csv = load_data_from_csv(csv_path)
+        # Ensure any missing keys fall back to dummy_data
+        merged = dummy_data.copy()
+        merged.update({k: v for k, v in data_from_csv.items() if v is not None})
+        # Check if form_type is in CSV, override if present
+        if "form_type" in data_from_csv and data_from_csv["form_type"]:
+            form_type = data_from_csv["form_type"]
+        data = merged
+    else:
+        data = dummy_data
+
+    # Detect box dimensions from template
+    box_dimensions = detect_description_box_dimensions(template_path)
+    if box_dimensions:
+        x_left, y_bottom, x_right, y_top = box_dimensions
+        print(f"Detected description box: left={x_left:.1f}, bottom={y_bottom:.1f}, right={x_right:.1f}, top={y_top:.1f}")
+        print(f"Box width: {x_right - x_left:.1f} points, height: {y_top - y_bottom:.1f} points")
+    else:
+        print("Warning: Could not detect box dimensions, using defaults")
+
+    reader = PdfReader(template_path)
+    writer = PdfWriter()
+
+    # Only fill the first page (main form)
+    # Other pages (recourse copy, office copy, etc.) typically have different layouts
+    # or already contain text that shouldn't be overwritten
+    for page_index, page in enumerate(reader.pages):
+        width = float(page.mediabox.width)
+        height = float(page.mediabox.height)
+
+        # Only create overlay for the first page (page_index == 0)
+        if page_index == 0:
+            overlay_page = create_overlay_page(width, height, data, form_type, box_dimensions)
+            # Merge overlay onto the existing page
+            page.merge_page(overlay_page)
+        
+        # Add all pages to output (but only first one gets filled)
+        writer.add_page(page)
+
+    with open(output_path, "wb") as f_out:
+        writer.write(f_out)
+
+
+if __name__ == "__main__":
+    import os
+    import sys
+    
+    # Check if called with command-line arguments (from extractor)
+    if len(sys.argv) >= 3:
+        # Called as: python fill_k138_notice.py <k138_pdf> <k138_values_csv>
+        k138_pdf_path = sys.argv[1]
+        k138_csv_path = sys.argv[2]
+        # Use the same filename as input (overwrites or creates new file)
+        output_path = k138_pdf_path
+        
+        print(f"Filling K138 from CSV...")
+        print(f"Template: {k138_pdf_path}")
+        print(f"CSV: {k138_csv_path}")
+        print(f"Output: {output_path}")
+        
+        fill_k138(
+            template_path=k138_pdf_path,
+            output_path=output_path,
+            use_csv=True,
+            csv_path=k138_csv_path,
+        )
+        print(f"Created: {output_path}")
+    else:
+        # Standalone usage - check if CSV file exists
+        csv_exists = os.path.exists("k138_values.csv")
+        
+        if csv_exists:
+            # Example for CSV usage:
+            print("Using CSV file: k138_values.csv")
+            fill_k138(
+                template_path=TEMPLATE_PDF,
+                output_path="K138_filled_from_csv.pdf",
+                use_csv=True,
+                csv_path="k138_values.csv",
+            )
+            print("Created: K138_filled_from_csv.pdf")
+        else:
+            # Basic usage with dummy data:
+            print("No CSV file found. Using dummy data with default template.")
+            print(f"Template: {TEMPLATE_PDF}")
+            print(f"Output: {OUTPUT_PDF}")
+            fill_k138()
+            print(f"Created: {OUTPUT_PDF}")
+
+#endregion

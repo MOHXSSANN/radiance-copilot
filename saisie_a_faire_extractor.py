@@ -2481,7 +2481,7 @@ def _extract_item_by_label(text: str) -> str:
     # Flexible for apostrophe/accents/OCR substitutions.
     pattern = (
         r"DESCRIPTION\s+DE\s+L(?:['\u2019]|\?)?ITEM\s+(?:Ã€|À|A|\?)\s+SAISIR\s*:?\s*"
-        r"(.*?)(?=\s*(?:EXP(?:Ã‰|E|\?)DITEUR|DESTINATAIRE|INDICES|NOTES?|POIDS|DECLARATION|DÃ‰CLARATION|LIEU\s+INTERCEPTION|DATE\s*/\s*HEURE)\b\s*:?\s*|\Z)"
+        r"(.*?)(?=\s*(?:EXP(?:Ã‰|É|\ufffd|E|\?)DITEUR|DESTINATAIRE|INDICES|NOTES?|POIDS|DECLARATION|DÃ‰CLARATION|LIEU\s+INTERCEPTION|DATE\s*/\s*HEURE)\b\s*:?\s*|\Z)"
     )
     m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
     if not m:
@@ -2499,8 +2499,12 @@ def _strip_address_leak_from_item(s: str) -> str:
     if not s:
         return ""
     out = str(s)
+    # Detect EXPÉDITEUR at start in any encoding (mojibake, replacement char, etc.)
+    alpha_start = re.sub(r"[^A-Za-z]", "", out[:20]).upper()
+    if alpha_start.startswith("EXPDITEUR"):
+        return ""
     m = re.search(
-        r"\b(?:EXP(?:Ã‰|E|\?)DITEUR|DESTINATAIRE|INDICES|LIEU\s+INTERCEPTION|DATE\s*/\s*HEURE)\b\s*:?",
+        r"\b(?:EXP(?:Ã‰|É|\ufffd|E|\?)DITEUR|DESTINATAIRE|INDICES|LIEU\s+INTERCEPTION|DATE\s*/\s*HEURE)\b\s*:?",
         out,
         re.IGNORECASE,
     )
@@ -2606,7 +2610,11 @@ def _is_weak_item_text(s: str) -> bool:
         return True
     if re.match(r"^(?:EXP(?:Ã‰|E|\?)DITEUR|DESTINATAIRE|INDICES|NOTES?|D(?:Ã‰|E)CLARATION)\b", v, re.IGNORECASE):
         return True
-    if re.search(r"\b(?:DESTINATAIRE|EXP(?:Ã‰|E|\?)DITEUR|INDICES)\b", v, re.IGNORECASE):
+    if re.search(r"\b(?:DESTINATAIRE|EXP(?:Ã‰|É|\ufffd|E|\?)DITEUR|INDICES)\b", v, re.IGNORECASE):
+        return True
+    # Detect EXPÉDITEUR in any encoding (mojibake, replacement char) by stripping non-alpha
+    alpha_start = re.sub(r"[^A-Za-z]", "", v[:20]).upper()
+    if alpha_start.startswith("EXPDITEUR"):
         return True
     return False
 
@@ -2954,12 +2962,26 @@ def build_k138_values_from_saisie(top: Dict[str, str], completed_pdf: Path, form
 
     # description_item: only the actual item text (no legal notice here â€“ notice is added once in fill_k138 via legal_notice)
     # First try direct key variants, then tolerant key match.
-    item_desc = (
-        safe_get(top, "DESCRIPTION DE L\u2019ITEM À SAISIR:")
-        or safe_get(top, "DESCRIPTION DE L'ITEM À SAISIR:")
-        or safe_get(top, "DESCRIPTION DE L\u2019ITEM Ã€ SAISIR:")
-        or safe_get(top, "DESCRIPTION DE L'ITEM Ã€ SAISIR:")
-    )
+    # Scan all keys for the DESCRIPTION DE L*ITEM*SAISIR field using alpha-normalized
+    # key matching (avoids picking up wrong straight-apostrophe key with EXPEDITEUR value).
+    item_desc = ""
+    for _ik, _iv in top.items():
+        _ik_alpha = re.sub(r"[^A-Za-z]", "", _ik).upper()
+        if _ik_alpha in ("DESCRIPTIONDELITEMASAISIR", "DESCRIPTIONDELITEMSAISIR"):
+            _cv = clean_value(_iv)
+            if _cv and not re.sub(r"[^A-Za-z]", "", _cv[:20]).upper().startswith("EXPDITEUR"):
+                item_desc = _cv
+                break
+    if not item_desc:
+        item_desc = (
+            safe_get(top, "DESCRIPTION DE L\u2019ITEM \u00c0 SAISIR:")
+            or safe_get(top, "DESCRIPTION DE L'ITEM \u00c0 SAISIR:")
+            or safe_get(top, "DESCRIPTION DE L\u2019ITEM \u00c3\u20ac SAISIR:")
+            or safe_get(top, "DESCRIPTION DE L'ITEM \u00c3\u20ac SAISIR:")
+        )
+    # Discard if value is EXPEDITEUR content (misextracted due to PDF layout artifacts)
+    if re.sub(r"[^A-Za-z]", "", (item_desc or "")[:20]).upper().startswith("EXPDITEUR"):
+        item_desc = ""
     if not item_desc:
         item_desc = _top_first_match(top, ["DESCRIPTION", "ITEM", "SAISIR"])
     # Strip repeated "DESCRIPTION DE L'ITEM Ã€ SAISIR:" blocks from table-style DOCX extraction

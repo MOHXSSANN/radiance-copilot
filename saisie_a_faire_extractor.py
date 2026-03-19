@@ -291,6 +291,7 @@ def get_hidden_data_dir(project_root: Path) -> Path:
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception:
             pass
@@ -553,6 +554,7 @@ def ensure_case_structure(
                         check=False,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
         except Exception:
             pass
@@ -593,6 +595,7 @@ def ensure_case_structure(
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception:
             pass
@@ -3437,41 +3440,44 @@ def load_notice_text(templates_folder: Path, form_type: str) -> str:
     return ""
 
 def find_saisie_template(templates_folder: Path) -> Optional[Path]:
-    """Find SAISIE template PDF in templates folder, excluding Agenda/K138 templates."""
-    if not templates_folder or not templates_folder.exists():
+    """Find SAISIE template PDF, excluding Agenda/K138 templates.
+
+    Searches configured folder, its parent, and the app-relative 'templates/' folder.
+    """
+    def _search_folder(folder: Path) -> Optional[Path]:
+        candidates: List[Tuple[int, str, Path]] = []
+        for pdf in folder.glob("*.pdf"):
+            name = _fold_ascii_lower(pdf.name)
+            if "template" not in name:
+                continue
+            if ("k138" in name) or ("agenda" in name):
+                continue
+            if "saisie" not in name:
+                continue
+            score = 0
+            if "a faire" in name:
+                score += 5
+            if "francompact" in name:
+                score += 3
+            if "dummy" not in name:
+                score += 2
+            if name.startswith("saisie"):
+                score += 1
+            candidates.append((score, name, pdf))
+        if candidates:
+            candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+            return candidates[0][2]
+        # Conservative fallback: explicit "saisie" only, never Agenda/K138.
+        for pdf in folder.glob("*.pdf"):
+            name = _fold_ascii_lower(pdf.name)
+            if ("saisie" in name) and ("agenda" not in name) and ("k138" not in name):
+                return pdf
         return None
 
-    candidates: List[Tuple[int, str, Path]] = []
-    for pdf in templates_folder.glob("*.pdf"):
-        name = _fold_ascii_lower(pdf.name)
-        if "template" not in name:
-            continue
-        if ("k138" in name) or ("agenda" in name):
-            continue
-        if "saisie" not in name:
-            continue
-
-        score = 0
-        if "a faire" in name:
-            score += 5
-        if "francompact" in name:
-            score += 3
-        if "dummy" not in name:
-            score += 2
-        if name.startswith("saisie"):
-            score += 1
-        candidates.append((score, name, pdf))
-
-    if candidates:
-        candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
-        return candidates[0][2]
-
-    # Conservative fallback: explicit "saisie" only, never Agenda/K138.
-    for pdf in templates_folder.glob("*.pdf"):
-        name = _fold_ascii_lower(pdf.name)
-        if ("saisie" in name) and ("agenda" not in name) and ("k138" not in name):
-            return pdf
-
+    for folder in _template_search_folders(templates_folder):
+        found = _search_folder(folder)
+        if found:
+            return found
     return None
 
 
@@ -4043,25 +4049,62 @@ def find_k138_template(templates_folder: Path, form_type: str) -> Optional[Path]
     return candidates[0][2]
 
 
+def _template_search_folders(templates_folder: Optional[Path]) -> List[Path]:
+    """Return ordered list of folders to search for template files.
+
+    Priority:
+      1. Configured templates_folder
+      2. Parent of configured folder (handles accidental case-subfolder selection)
+      3. 'templates/' next to the running script / frozen exe
+    """
+    seen: set = set()
+    result: List[Path] = []
+
+    def _add(p: Optional[Path]) -> None:
+        if p and p.exists() and p.is_dir():
+            key = str(p.resolve())
+            if key not in seen:
+                seen.add(key)
+                result.append(p.resolve())
+
+    _add(templates_folder)
+    if templates_folder:
+        _add(templates_folder.parent)
+
+    # App-relative 'templates/' folder (works both as script and frozen exe)
+    if getattr(sys, "frozen", False):
+        app_dir = Path(sys.executable).parent
+    else:
+        app_dir = Path(__file__).parent
+    _add(app_dir / "templates")
+
+    return result
+
+
 def find_agenda_template(templates_folder: Path) -> Optional[Path]:
-    """Find official Agenda template in templates folder (PDF preferred, DOCX fallback)."""
-    if not templates_folder or not templates_folder.exists():
+    """Find official Agenda template (PDF preferred, DOCX fallback).
+
+    Searches configured folder, its parent, and the app-relative 'templates/' folder.
+    """
+    def _search_folder(folder: Path) -> Optional[Path]:
+        pdfs = [p for p in folder.glob("*.pdf") if "agenda" in p.name.lower()]
+        if pdfs:
+            for p in pdfs:
+                if "template" in p.name.lower():
+                    return p
+            return pdfs[0]
+        docxs = [p for p in folder.glob("*.docx") if "agenda" in p.name.lower()]
+        if docxs:
+            for p in docxs:
+                if "template" in p.name.lower():
+                    return p
+            return docxs[0]
         return None
 
-    pdfs = [p for p in templates_folder.glob("*.pdf") if "agenda" in p.name.lower()]
-    if pdfs:
-        # Prefer files explicitly marked as template.
-        for p in pdfs:
-            if "template" in p.name.lower():
-                return p
-        return pdfs[0]
-
-    docxs = [p for p in templates_folder.glob("*.docx") if "agenda" in p.name.lower()]
-    if docxs:
-        for p in docxs:
-            if "template" in p.name.lower():
-                return p
-        return docxs[0]
+    for folder in _template_search_folders(templates_folder):
+        found = _search_folder(folder)
+        if found:
+            return found
     return None
 
 
@@ -4091,33 +4134,38 @@ def _fold_ascii_lower(s: str) -> str:
 
 
 def find_saisie_interet_template(templates_folder: Path) -> Optional[Path]:
-    """Find SAISIE D'INTERET Excel template in templates folder."""
-    if not templates_folder or not templates_folder.exists():
+    """Find SAISIE D'INTERET Excel template.
+
+    Searches configured folder, its parent, and the app-relative 'templates/' folder.
+    """
+    def _search_folder(folder: Path) -> Optional[Path]:
+        candidates: List[Tuple[int, str, Path]] = []
+        for ext in ("*.xlsx", "*.xlsm", "*.xltx", "*.xltm"):
+            for xl in folder.glob(ext):
+                name = _fold_ascii_lower(xl.name)
+                if ("saisie" in name) and ("interet" in name):
+                    score = 0
+                    if "template" in name:
+                        score += 3
+                    if "dummy" not in name:
+                        score += 1
+                    if xl.suffix.lower() == ".xlsx":
+                        score += 1
+                    candidates.append((score, name, xl))
+        if candidates:
+            candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+            return candidates[0][2]
+        # Fallback: any Excel file with "interet".
+        for ext in ("*.xlsx", "*.xlsm", "*.xltx", "*.xltm"):
+            for xl in folder.glob(ext):
+                if "interet" in _fold_ascii_lower(xl.name):
+                    return xl
         return None
 
-    candidates: List[Tuple[int, str, Path]] = []
-    for ext in ("*.xlsx", "*.xlsm", "*.xltx", "*.xltm"):
-        for xl in templates_folder.glob(ext):
-            name = _fold_ascii_lower(xl.name)
-            if ("saisie" in name) and ("interet" in name):
-                score = 0
-                if "template" in name:
-                    score += 3
-                if "dummy" not in name:
-                    score += 1
-                if xl.suffix.lower() == ".xlsx":
-                    score += 1
-                candidates.append((score, name, xl))
-
-    if candidates:
-        candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
-        return candidates[0][2]
-
-    # Fallback: any Excel file with "interet".
-    for ext in ("*.xlsx", "*.xlsm", "*.xltx", "*.xltm"):
-        for xl in templates_folder.glob(ext):
-            if "interet" in _fold_ascii_lower(xl.name):
-                return xl
+    for folder in _template_search_folders(templates_folder):
+        found = _search_folder(folder)
+        if found:
+            return found
     return None
 
 
@@ -4637,17 +4685,56 @@ def extract_agenda_core_values(agenda_path: Path) -> Dict[str, str]:
         if sied and _is_valid_sied_value(sied):
             out["sied_number"] = sied
 
-    # Guardrail: CE/CID must not equal inventory.
+    # Guardrail: CE/CID must not be identical to inventory (exact match only).
+    # Substring checks were too aggressive — a CE/CID like 9823-43-2 would get
+    # falsely cleared because its compact form "9823432" appears inside "W09823432".
     if out["sied_number"] and out["inventory_number"]:
         sied_tok = _compact_alnum_token(out["sied_number"])
         inv_tok = _compact_alnum_token(out["inventory_number"])
-        if (
-            (sied_tok == inv_tok)
-            or (sied_tok and inv_tok and sied_tok in inv_tok)
-            or (sied_tok and inv_tok and inv_tok in sied_tok)
-        ):
+        if sied_tok == inv_tok:
             out["sied_number"] = ""
     return out
+
+
+def _read_sied_raw_from_agenda_pdf(agenda_path: Path) -> str:
+    """
+    Read whatever the user typed in the SIED field of the Agenda PDF — no format
+    validation, no pattern matching.  Returns the raw cleaned string or "".
+    Falls back to the positional SIED-rect text if no named widget exists.
+    """
+    if (agenda_path.suffix or "").lower() != ".pdf" or not agenda_path.exists():
+        return ""
+    try:
+        doc = fitz.open(str(agenda_path))
+        page = doc[0]
+        # 1) Named "SIED" widget (most reliable)
+        for w in list(page.widgets() or []):
+            nm = re.sub(r"[^A-Za-z0-9]+", "", clean_value(str(w.field_name or ""))).upper()
+            if nm == "SIED":
+                val = clean_value(str(w.field_value or ""))
+                doc.close()
+                return val
+        # 2) Positional fallback: read text from the SIED rectangle area
+        try:
+            _agent_rect, _barcode_rect, _inv_pt, sied_rect = _agenda_rects_for_page(page)
+            rect = fitz.Rect(
+                max(0, sied_rect.x0 - 4),
+                max(0, sied_rect.y0 - 3),
+                min(page.rect.width, sied_rect.x1 + 60),
+                min(page.rect.height, sied_rect.y1 + 20),
+            )
+            words = [
+                w[4] for w in page.get_text("words")
+                if fitz.Rect(w[:4]).intersects(rect)
+            ]
+            doc.close()
+            return clean_value(" ".join(words))
+        except Exception:
+            pass
+        doc.close()
+    except Exception:
+        pass
+    return ""
 
 
 def sync_agenda_files(case_paths: Dict[str, Path]) -> Optional[Path]:
@@ -5403,6 +5490,7 @@ class AppState:
     case_folder_locked: bool = False
     badge_number: str = ""
     form_type: str = "Stupefiant-Others"  # Default form type
+    clerk_agenda_file: Optional[Path] = None  # Clerk-selected agenda PDF (Clerk workflow)
 
     last_top: Optional[Dict[str, str]] = None
     last_bottom: Optional[List[Dict[str, str]]] = None
@@ -5419,11 +5507,17 @@ class AppState:
     saisie_affaire_generated: bool = False
 
 class AppBase:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, profile_role: str = "BSO", profile_badge: str = ""):
         self.root = root
         self.state = AppState()
+        self.profile_role  = profile_role  or "BSO"
+        self.profile_badge = profile_badge or ""
 
-        self.root.title("Radiance Copilot : Leo Blanchette")
+        # Pre-fill badge number from splash selection for BSO
+        if self.profile_role == "BSO" and self.profile_badge:
+            self.state.badge_number = self.profile_badge
+
+        self.root.title(f"Radiance Copilot — {self.profile_role}")
         app_ico_path = resolve_asset_path("photos/Radiance-copilot-icon.ico", "Radiance-copilot-icon.ico")
         app_png_path = resolve_asset_path("photos/Radiance-copilot-icon.png", "Radiance-copilot-icon.png")
         try:
@@ -5481,9 +5575,10 @@ class AppBase:
         banner_bg = getattr(self, "_accent_color", "#1F4E79")
         banner = tk.Frame(frm, bg=banner_bg, height=148, bd=0, highlightthickness=0)
         banner.grid(row=0, column=0, sticky="ew")
-        banner.grid_columnconfigure(0, weight=1)
+        banner.grid_columnconfigure(0, weight=1)   # title/logo — takes all spare width
+        banner.grid_columnconfigure(1, weight=0)   # buttons — fixed width, never overlaps title
         middle_wrap = tk.Frame(banner, bg=banner_bg, bd=0, highlightthickness=0)
-        middle_wrap.grid(row=0, column=0, rowspan=2, padx=(16, 16), pady=(10, 10), sticky="nsew")
+        middle_wrap.grid(row=0, column=0, rowspan=2, padx=(16, 8), pady=(10, 10), sticky="nsew")
         middle_wrap.grid_columnconfigure(1, weight=1)
         center_logo_wrap = tk.Frame(middle_wrap, bg=banner_bg, bd=0, highlightthickness=0)
         center_logo_wrap.grid(row=0, column=0, rowspan=2, padx=(0, 10), sticky="w")
@@ -5577,18 +5672,23 @@ class AppBase:
             bg=banner_bg,
             anchor="w",
         ).pack(anchor="w", pady=(10, 0))
+        role  = getattr(self, "profile_role",  "BSO") or "BSO"
+        badge = getattr(self, "profile_badge", "")   or ""
+        profile_line = f"Radiance Copilot   |   Profile: {role}"
+        if role == "BSO" and badge:
+            profile_line += f"  ({badge})"
         tk.Label(
             title_wrap,
-            text="Radiance Copilot : Leo Blanchette",
+            text=profile_line,
             font=("Segoe UI", 11),
             fg="#DCE8F4",
             bg=banner_bg,
             anchor="w",
         ).pack(anchor="w", pady=(0, 10))
 
-        # Top-right actions: Configurations (left) + Help (right).
+        # Top-right actions — placed in grid column 1 so it never overlaps the title.
         top_actions = tk.Frame(banner, bg=banner_bg, bd=0, highlightthickness=0)
-        top_actions.place(relx=1.0, x=-12, y=10, anchor="ne")
+        top_actions.grid(row=0, column=1, sticky="ne", padx=(0, 12), pady=(10, 0))
         self.btnHelp = ttk.Button(
             top_actions,
             text="Help",
@@ -5603,6 +5703,20 @@ class AppBase:
             style="HeaderPrimary.TButton",
         )
         self.btnConfig.pack(side="right", padx=(0, 8))
+        self.btnChangeProfile = ttk.Button(
+            top_actions,
+            text="Change Profile",
+            command=self.on_change_profile,
+            style="Help.TButton",
+        )
+        self.btnChangeProfile.pack(side="right", padx=(0, 8))
+        self.btnExit = ttk.Button(
+            top_actions,
+            text="Exit",
+            command=self.on_exit_session,
+            style="Help.TButton",
+        )
+        self.btnExit.pack(side="right", padx=(0, 8))
 
         # --- Instruction & Feedback strip (moved to top, compact) ---
         progress_box = ttk.LabelFrame(frm, text="Instruction & Feedback", padding=6)
@@ -5638,7 +5752,7 @@ class AppBase:
         case_strip.columnconfigure(1, weight=1)
         ttk.Label(
             case_strip,
-            text="Case folder:",
+            text="Active Case Folder:",
             font=("Segoe UI Semibold", 10),
         ).grid(row=0, column=0, sticky="w", padx=(2, 6))
         self.varCaseFolderBanner = tk.StringVar(value="-")
@@ -5675,13 +5789,13 @@ class AppBase:
         ).grid(row=0, column=1, sticky="w")
         
         # --- SAISIE PDF/Word/Image file selector ---
-        self.boxSaisieFile = ttk.LabelFrame(frm, text="2) Select SAISIE PDF, Word, or Image File", padding=8)
+        self.boxSaisieFile = ttk.LabelFrame(frm, text="Select Saisie à Faire", padding=8)
         self.boxSaisieFile.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.boxSaisieFile.columnconfigure(0, weight=1)
         self.entSaisieFile = ttk.Entry(self.boxSaisieFile)
         self.entSaisieFile.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(self.boxSaisieFile, text="Browse...", command=self.on_browse_saisie_file, style="Secondary.TButton").grid(row=0, column=1)
-        ttk.Label(self.boxSaisieFile, text="(Select filled SAISIE PDF/Word; images are also supported by browse)", 
+        ttk.Label(self.boxSaisieFile, text="Drag & drop your Saisie à Faire (PDF or Word) here, or use Browse to select it.",
                  font=("TkDefaultFont", 8)).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
         # --- Form Type Radio Buttons (K138 only) ---
@@ -5714,22 +5828,7 @@ class AppBase:
             command=self.on_form_type_changed
         ).grid(row=0, column=2, sticky="w")
 
-        # --- Buttons ---
-        self.frmExtractActions = ttk.Frame(frm)
-        self.frmExtractActions.grid(row=6, column=0, sticky="ew", pady=(10, 0))
-        self.frmExtractActions.columnconfigure(0, weight=1)
-
-        self.btnProcess = ttk.Button(
-            self.frmExtractActions,
-            text="Extract Values from Saise A faire",
-            command=self.on_process_pdf,
-            state="normal",
-            style="Primary.TButton",
-        )
-        self.btnProcess.grid(row=0, column=0, sticky="w")
-        
-        ttk.Label(self.frmExtractActions, text="(Select configurations folder, input file, and form type, then click to process)", 
-                 font=("TkDefaultFont", 8)).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        # Extraction is now automatic — no manual button needed.
 
         # --- Tabs (Agenda + Saisie d'interet + K138) ---
         self.tabs = ttk.Notebook(frm)
@@ -5760,13 +5859,13 @@ class AppBase:
         folder_actions.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 8))
         ttk.Button(
             folder_actions,
-            text="Select Case Folder",
+            text="Select  (Drag & Drop)",
             command=self.on_select_case_folder,
             style="Secondary.TButton",
         ).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(
             folder_actions,
-            text="Create New Case Folder",
+            text="New",
             command=self.on_create_case_folder,
             style="Primary.TButton",
         ).grid(row=0, column=1, padx=(0, 8))
@@ -5779,9 +5878,11 @@ class AppBase:
 
         # Saisie D'affaire tab
         self.tabSaisieAffaire.columnconfigure(0, weight=1)
+        self.varSaisieAffaireFound = tk.StringVar(value="")
         ttk.Label(
             self.tabSaisieAffaire,
-            text="Saisie D'affaire (13 main fields + 4 checkboxes)",
+            text="Saisie D'affaire (13 main fields + 4 checkboxes)   |   Tip: use ; as line separator for multi-line address fields (EXPEDITEUR, DESTINATAIRE)",
+            font=("TkDefaultFont", 9),
         ).grid(row=0, column=0, sticky="w", padx=8, pady=(10, 6))
         self.frmSaisieAffaire = ttk.Frame(self.tabSaisieAffaire)
         self.frmSaisieAffaire.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
@@ -5835,7 +5936,7 @@ class AppBase:
         ttk.Checkbutton(checks_row, text="SAISIE D'ENVERGURE", variable=self.varCheckSaisieEnvergure).grid(row=0, column=3)
 
         saisie_actions = ttk.Frame(self.tabSaisieAffaire)
-        saisie_actions.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+        saisie_actions.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 4))
         ttk.Button(
             saisie_actions,
             text="Update from Saisie D'affaire",
@@ -5848,6 +5949,11 @@ class AppBase:
             command=self.on_generate_saisie_affaire,
             style="Primary.TButton",
         ).grid(row=0, column=1)
+
+        saisie_found_row = ttk.Frame(self.tabSaisieAffaire)
+        saisie_found_row.grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(saisie_found_row, text="Saisie D'affaire in case folder:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(saisie_found_row, textvariable=self.varSaisieAffaireFound).grid(row=0, column=1, sticky="w")
 
         # K138 panel (downstream of Agenda)
         self.tabK138.columnconfigure(1, weight=1)
@@ -5913,6 +6019,18 @@ class AppBase:
         )
         self.btnRefreshAgenda.grid(row=0, column=1, padx=(0, 8))
 
+        # Clerk-only: select case folder to auto-load Saisie D'affaire and enable Agenda + K138
+        self.btnClerkSelectAgenda = ttk.Button(
+            btnAgendaRow,
+            text="Select Case Folder",
+            command=self.on_clerk_select_case_folder,
+            style="Secondary.TButton",
+        )
+        self.btnClerkSelectAgenda.grid(row=0, column=2, padx=(0, 8))
+        # Show only for Clerk role; hidden for all others
+        if getattr(self, "profile_role", "BSO") != "Clerk":
+            self.btnClerkSelectAgenda.grid_remove()
+
         # Auto-refresh agenda status when user switches to the Agenda tab
         self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -5977,10 +6095,21 @@ class AppBase:
         else:
             self.last_saisie_folder = None
 
+        # Restore last SAISIE file from previous session (if it still exists)
+        last_saisie_file = get_config_path("paths", "last_saisie_file")
+        if last_saisie_file and last_saisie_file.exists() and last_saisie_file.is_file():
+            self.state.saisie_pdf_file = last_saisie_file
+            self._set_entry(self.entSaisieFile, last_saisie_file)
+            if not self.state.working_dir:
+                wd, cn = detect_working_directory(last_saisie_file)
+                self.state.working_dir = wd
+                self.state.case_folder_name = cn
+
         self._prefill_saisie_affaire_defaults()
-        
+
         self._refresh_config_summary()
         self._init_dnd()
+        self._apply_role_tab_visibility()   # hide tabs the current role cannot access
         self._refresh_case_folder_banner()
         self._refresh_agenda_status()
         self._apply_step_visibility()
@@ -6010,6 +6139,7 @@ class AppBase:
         style.configure("TLabelframe.Label", background=bg, foreground=ink, font=("Segoe UI Semibold", 10))
         style.configure("TLabel", background=bg, foreground=ink)
         style.configure("TEntry", fieldbackground="#FFFFFF", bordercolor=line, relief="solid")
+        style.configure("DragOver.TEntry", fieldbackground="#E3F0FB", bordercolor="#1F4E79", relief="solid")
 
         style.configure(
             "Primary.TButton",
@@ -6373,13 +6503,91 @@ class AppBase:
         p = self._active_case_folder_path()
         return p.name if p else "-"
 
-    def _refresh_folder_dependent_tabs(self):
-        has_selected_case_folder = bool(self.state.case_folder_locked and self.state.working_dir)
+    def _role_allows_tab(self, tab_name: str) -> bool:
+        """Return True if the current profile role has access to the given tab."""
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+        if role == "Supervisor":
+            return True
+        _access = {
+            # BSO: no K138, no Saisie d'interet
+            "BSO":   {"Select Folder", "Saisie D'affaire", "Agenda"},
+            # Clerk: no Select Folder, no Saisie d'affaire
+            # Clerk sets case folder by dragging a file into the Agenda tab
+            "Clerk": {"Agenda", "K138", "Saisie d'interet"},
+        }
+        return tab_name in _access.get(role, set())
+
+    def _apply_role_tab_visibility(self):
+        """
+        Enforce role-based tab restrictions.
+        Tabs the role cannot access are fully hidden from the tab bar (state='hidden').
+        Called at startup and re-called after every status refresh so nothing can
+        accidentally re-show a restricted tab.
+        """
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+        _all_tabs = {
+            "Select Folder":    self.tabSelectFolder,
+            "Saisie D'affaire": self.tabSaisieAffaire,
+            "Agenda":           self.tabAgenda,
+            "K138":             self.tabK138,
+            "Saisie d'interet": self.tabSaisieInteret,
+        }
         try:
-            self.tabs.tab(self.tabSaisieAffaire, state="normal" if has_selected_case_folder else "disabled")
-            self.tabs.tab(self.tabAgenda, state="normal" if has_selected_case_folder else "disabled")
-            if not has_selected_case_folder:
-                self.tabs.select(self.tabSelectFolder)
+            for tab_name, tab_widget in _all_tabs.items():
+                if not self._role_allows_tab(tab_name):
+                    self.tabs.tab(tab_widget, state="hidden")
+            # Clerk: Agenda is always visible; only force-select it on first call (startup).
+            if role == "Clerk":
+                self.tabs.tab(self.tabAgenda, state="normal")
+                if not getattr(self, "_clerk_initial_tab_set", False):
+                    self.tabs.select(self.tabAgenda)
+                    self._clerk_initial_tab_set = True
+        except Exception:
+            pass
+
+    def _refresh_folder_dependent_tabs(self):
+        has_folder = bool(self.state.case_folder_locked and self.state.working_dir)
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+        # Saisie D'affaire found status
+        if hasattr(self, "varSaisieAffaireFound"):
+            active = self._active_case_folder_path()
+            if active and active.exists():
+                pdfs = list(active.glob("*Saisie_D_affaire.pdf"))
+                if pdfs:
+                    self.varSaisieAffaireFound.set(f"found: yes  ({pdfs[0].name})")
+                else:
+                    self.varSaisieAffaireFound.set("found: no")
+            elif active:
+                self.varSaisieAffaireFound.set("found: no")
+            else:
+                self.varSaisieAffaireFound.set("-")
+        try:
+            # Saisie D'affaire — only enable if role allows AND folder is selected
+            if self._role_allows_tab("Saisie D'affaire"):
+                self.tabs.tab(self.tabSaisieAffaire,
+                              state="normal" if has_folder else "disabled")
+
+            # Agenda — Clerk always sees it; others need a folder
+            if self._role_allows_tab("Agenda"):
+                if role == "Clerk":
+                    self.tabs.tab(self.tabAgenda, state="normal")
+                else:
+                    self.tabs.tab(self.tabAgenda,
+                                  state="normal" if has_folder else "disabled")
+
+            # When no folder is selected, land on the correct default tab —
+            # but only if the user isn't already on an allowed tab for their role.
+            if not has_folder:
+                if role == "Clerk":
+                    try:
+                        current = self.tabs.select()
+                        clerk_tabs = {str(self.tabAgenda), str(self.tabK138), str(self.tabSaisieInteret)}
+                        if current not in clerk_tabs:
+                            self.tabs.select(self.tabAgenda)
+                    except Exception:
+                        self.tabs.select(self.tabAgenda)
+                elif self._role_allows_tab("Select Folder"):
+                    self.tabs.select(self.tabSelectFolder)
         except Exception:
             pass
 
@@ -6398,7 +6606,20 @@ class AppBase:
     def _refresh_config_summary(self):
         folder_txt = self.state.templates_folder.name if self.state.templates_folder else "-"
         badge_txt = self.state.badge_number or re.sub(r"\D", "", self.varBadgeNumber.get() or "") or "-"
-        self.varConfigSummary.set(f"Folder: {folder_txt} | Badge: {badge_txt}")
+        files_txt = ""
+        if self.state.templates_folder and self.state.templates_folder.exists():
+            try:
+                found = [
+                    f.name for f in self.state.templates_folder.iterdir()
+                    if f.is_file() and f.suffix.lower() in (".pdf", ".docx", ".xlsx", ".txt")
+                ]
+                if found:
+                    files_txt = "  |  Files: " + ", ".join(sorted(found)[:8])
+                    if len(found) > 8:
+                        files_txt += f" (+{len(found) - 8} more)"
+            except Exception:
+                pass
+        self.varConfigSummary.set(f"Folder: {folder_txt} | Badge: {badge_txt}{files_txt}")
         self._apply_step_visibility()
         self._refresh_instruction_feedback()
 
@@ -6421,10 +6642,8 @@ class AppBase:
         try:
             if show_saisie_step:
                 self.boxSaisieFile.grid()
-                self.frmExtractActions.grid()
             else:
                 self.boxSaisieFile.grid_remove()
-                self.frmExtractActions.grid_remove()
         except Exception:
             pass
 
@@ -6482,7 +6701,7 @@ class AppBase:
         self._prefill_inventory_from_case_folder(folder.name, force=True)
         self._refresh_case_folder_banner()
         if write_log:
-            self.log(f"Active case folder: {folder.name}")
+            self.log(f"Changed to: {folder.resolve()}")
         self._refresh_agenda_status()
 
     def on_select_case_folder(self):
@@ -6494,7 +6713,12 @@ class AppBase:
         self._set_active_case_folder(folder)
 
     def on_create_case_folder(self):
-        initial_parent = str(Path.cwd())
+        active = self._active_case_folder_path()
+        initial_parent = str(
+            (active.parent if active else None)
+            or self.last_saisie_folder
+            or Path.cwd()
+        )
         parent_raw = filedialog.askdirectory(
             title="Select Parent Folder for New Case Folder",
             initialdir=initial_parent,
@@ -6594,12 +6818,16 @@ class AppBase:
         if not template_pdf:
             messagebox.showerror(
                 "Missing SAISIE Template",
-                f"Could not find SAISIE template PDF in:\n{self.state.templates_folder}",
+                f"Could not find SAISIE template PDF in:\n{self.state.templates_folder}\n\n"
+                f"Make sure your Configurations folder contains the blank SAISIE PDF template.\n\n"
+                f"Go to Configurations (top-right) and re-select the correct templates folder.",
             )
             return
 
         field_values, check_values = self._collect_saisie_affaire_form_values()
-        output_pdf = active_case / "Saisie_D_affaire.pdf"
+        _inv = _normalize_inventory_number(field_values.get("inventory_number", ""))
+        _inv_prefix = f"{_inv}_" if _inv else ""
+        output_pdf = active_case / f"{_inv_prefix}Saisie_D_affaire.pdf"
 
         self._set_busy(True, "Generating Saisie D'affaire...")
         try:
@@ -6633,8 +6861,9 @@ class AppBase:
                 pass
             self.log("Saisie D'affaire created.")
             self.log(f"Output: {output_pdf.name}")
-            self._reset_saisie_affaire_form()
             self._refresh_instruction_feedback()
+            if hasattr(self, "varSaisieAffaireFound"):
+                self.varSaisieAffaireFound.set(f"found: yes  ({output_pdf.name})")
             messagebox.showinfo("Saisie D'affaire", f"Generated:\n{output_pdf}")
         except Exception as e:
             self.log(f"Saisie D'affaire generation failed: {e}")
@@ -6800,6 +7029,27 @@ class AppBase:
             ),
         ]
 
+    def on_exit_session(self):
+        """Save current session state and close the application."""
+        try:
+            if self.state.saisie_pdf_file and self.state.saisie_pdf_file.exists():
+                set_config_path("paths", "last_saisie_file", self.state.saisie_pdf_file)
+            if self.state.working_dir:
+                set_config_path("paths", "saisie_folder", self.state.working_dir)
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def on_change_profile(self):
+        """Re-show the profile splash and restart with the new selection."""
+        if messagebox.askyesno(
+            "Change Profile",
+            "Changing profile will restart the application.\n\nContinue?",
+            parent=self.root,
+        ):
+            self.root._change_profile_requested = True
+            self.root.destroy()
+
     def on_open_help(self):
         """Open a paged help dialog with Next/Back navigation."""
         existing = getattr(self, "_help_window", None)
@@ -6941,8 +7191,13 @@ class AppBase:
         self.btnRefreshAgenda.configure(state="disabled")
         self.btnGenerateK138.configure(state="disabled")
         self.btnGenerateSaisieInteret.configure(state="disabled")
-        self.tabs.tab(self.tabK138, state="disabled")
-        self.tabs.tab(self.tabSaisieInteret, state="disabled")
+        # Never disable a tab the current role is allowed to see — disabling the
+        # currently-selected tab causes the Notebook to jump to another tab.
+        # The gate label/button state inside the tab communicates the unavailability.
+        _k138_state = "normal" if self._role_allows_tab("K138") else "disabled"
+        _si_state   = "normal" if self._role_allows_tab("Saisie d'interet") else "disabled"
+        self.tabs.tab(self.tabK138, state=_k138_state)
+        self.tabs.tab(self.tabSaisieInteret, state=_si_state)
         self.frmK138Actions.grid_remove()
         self.lblK138Gate.grid()
         if not keep_case_folder:
@@ -6956,7 +7211,7 @@ class AppBase:
             wd, case_name = detect_working_directory(file_path)
         self.state.working_dir = wd
         self.state.case_folder_name = case_name
-        self.log(f"Active case folder: {wd.name}")
+        self.log(f"Changed to: {wd}")
         self._refresh_case_folder_banner()
         if refresh_status:
             self._refresh_agenda_status()
@@ -7085,12 +7340,17 @@ class AppBase:
         self.varInteretOutput.set("-")
         self.varInteretStatus.set("Select SAISIE input file first.")
         self.btnGenerateSaisieInteret.configure(state="disabled")
-        self.tabs.tab(self.tabSaisieInteret, state="disabled")
+
+        # Never disable the tab for roles that are allowed to see it —
+        # disabling the current tab causes the notebook to jump away.
+        # Hide it only for roles without access; otherwise keep it normal.
+        if self._role_allows_tab("Saisie d'interet"):
+            self.tabs.tab(self.tabSaisieInteret, state="normal")
+        else:
+            self.tabs.tab(self.tabSaisieInteret, state="hidden")
 
         if not wd or not self.state.saisie_pdf_file:
             return
-        # Keep tab visible once a case is selected, even if generation is not ready yet.
-        self.tabs.tab(self.tabSaisieInteret, state="normal")
         if not self.state.templates_folder:
             self.varInteretStatus.set("Select Configurations folder first.")
             return
@@ -7251,40 +7511,67 @@ class AppBase:
         self.state.last_inventory_number = inv or self.state.last_inventory_number
         self.state.last_agent_id = agent or self.state.last_agent_id
         self.state.last_sied_number = sied_val
+        # Clerk workflow: ready as soon as the Saisie D'affaire is loaded in the folder.
+        # Agenda and K138 are both available in any order — no Extract Values step required.
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+        if role == "Clerk":
+            clerk_saisie = self.state.saisie_pdf_file
+            if clerk_saisie and clerk_saisie.exists():
+                has_k138_base = True   # Can generate K138 directly from Saisie D'affaire
+            clerk_agenda = getattr(self.state, "clerk_agenda_file", None)
+            if clerk_agenda and clerk_agenda.exists():
+                agenda_exists = True   # An Agenda was already generated in this folder
+
         self.varAgendaInventory.set(inv or "-")
         self.varAgendaAgent.set(agent or "-")
         self.varK138AgendaReady.set("yes" if agenda_exists else "no")
         self.varK138Sied.set(sied_val or "-")
         self.btnRefreshAgenda.configure(state="normal" if agenda_exists else "disabled")
-        if agenda_exists:
+
+        # K138 gate: Clerk unlocks K138 as soon as Saisie D'affaire is loaded.
+        # Non-Clerk still requires an Agenda to exist first.
+        k138_unlocked = has_k138_base if (role == "Clerk") else agenda_exists
+        if k138_unlocked:
             self.lblK138Gate.grid_remove()
             self.frmK138Actions.grid()
         else:
             self.frmK138Actions.grid_remove()
             self.lblK138Gate.grid()
-        if agenda_exists and has_k138_base:
+
+        # K138 tab state: never disable for roles that are allowed to see it.
+        # Disabling the current tab causes the notebook to jump away.
+        # The gate message and button state inside the tab handle the UX instead.
+        if self._role_allows_tab("K138"):
             self.tabs.tab(self.tabK138, state="normal")
-            self.btnGenerateK138.configure(state="normal")
-            self.varK138Status.set("Ready: Agenda exists. Generate K138 from SAISIE + Agenda CE/CID.")
-        elif agenda_exists and (not has_k138_base):
-            self.tabs.tab(self.tabK138, state="disabled")
-            self.btnGenerateK138.configure(state="disabled")
-            self.varK138Status.set("Run Extract Values from Saise A faire first to prepare SAISIE values for K138.")
+            if role == "Clerk" and has_k138_base:
+                self.btnGenerateK138.configure(state="normal")
+                if agenda_exists:
+                    self.varK138Status.set("Ready: Generate K138 using Agenda CE/CID + Saisie D'affaire values.")
+                else:
+                    self.varK138Status.set("Ready: Generate K138 from Saisie D'affaire. (CE/CID field will be blank — fill it after printing if needed.)")
+            elif agenda_exists and has_k138_base:
+                self.btnGenerateK138.configure(state="normal")
+                self.varK138Status.set("Ready: Agenda exists. Generate K138 from SAISIE + Agenda CE/CID.")
+            elif agenda_exists:
+                self.btnGenerateK138.configure(state="disabled")
+                self.varK138Status.set("Run Extract Values from Saisie A faire first to prepare SAISIE values for K138.")
+            else:
+                self.btnGenerateK138.configure(state="disabled")
+                self.varK138Status.set("Create Agenda first. K138 is downstream of Agenda.")
         else:
-            self.tabs.tab(self.tabK138, state="disabled")
+            self.tabs.tab(self.tabK138, state="hidden")
             self.btnGenerateK138.configure(state="disabled")
-            self.varK138Status.set("Create Agenda first. K138 is downstream of Agenda.")
 
         if self._helper_module_missing("K138"):
             module_name = REQUIRED_HELPER_MODULES["K138"]
             self._log_missing_helper_modules_once()
-            self.tabs.tab(self.tabK138, state="disabled")
             self.btnGenerateK138.configure(state="disabled")
             self.varK138Status.set(
                 f"Missing helper module: {module_name}.py. K138 generation is disabled."
             )
 
         self._refresh_saisie_interet_status()
+        self._apply_role_tab_visibility()   # always re-enforce role restrictions last
         self._refresh_instruction_feedback()
 
     def on_generate_saisie_interet(self):
@@ -7420,6 +7707,77 @@ class AppBase:
             messagebox.showerror("Saisie d'interet Error", str(e))
         finally:
             self._set_busy(False)
+
+    def on_clerk_select_case_folder(self):
+        """Clerk workflow: select case folder — auto-finds Saisie D'affaire inside it.
+        Enables Generate Agenda and Generate K138 immediately, in any order.
+        """
+        initial_dir = str(self.last_saisie_folder or Path.cwd())
+        folder_raw = filedialog.askdirectory(
+            title="Select Case Folder (containing Saisie D'affaire PDF)",
+            initialdir=initial_dir,
+        )
+        if not folder_raw:
+            return
+        case_folder = Path(folder_raw).resolve()
+
+        # Auto-find the Saisie D'affaire PDF in the folder
+        saisie_pdfs = sorted(case_folder.glob("*Saisie_D_affaire.pdf"))
+        if not saisie_pdfs:
+            # Fallback: any PDF with "saisie" in the name
+            saisie_pdfs = sorted(
+                p for p in case_folder.glob("*.pdf")
+                if "saisie" in p.name.lower() and "agenda" not in p.name.lower()
+            )
+        if not saisie_pdfs:
+            messagebox.showwarning(
+                "No Saisie D'affaire Found",
+                f"No Saisie D'affaire PDF found in:\n{case_folder}\n\n"
+                "Make sure the BSO has placed the Saisie D'affaire PDF in this folder.",
+            )
+            return
+
+        saisie_pdf = saisie_pdfs[0]
+        if len(saisie_pdfs) > 1:
+            self.log(f"  i Multiple Saisie D'affaire PDFs found; using: {saisie_pdf.name}")
+
+        # Set working dir and source file
+        self.state.working_dir = case_folder
+        self.state.case_folder_locked = True
+        self.last_saisie_folder = case_folder
+        set_config_path("paths", "saisie_folder", case_folder)
+
+        self.state.saisie_pdf_file = saisie_pdf
+        self._set_entry(self.entSaisieFile, saisie_pdf)
+        set_config_path("paths", "last_saisie_file", saisie_pdf)
+
+        # Check if an Agenda already exists (for K138 to use later)
+        existing_agenda = self._find_agenda_in_folder(case_folder)
+        self.state.clerk_agenda_file = existing_agenda
+
+        self.log(f"Clerk: Case folder: {case_folder.name}")
+        self.log(f"  Saisie D'affaire: {saisie_pdf.name}")
+        if existing_agenda:
+            self.log(f"  Agenda already exists: {existing_agenda.name}")
+
+        self._refresh_case_folder_banner()
+        self._refresh_agenda_status()
+
+    def _find_agenda_in_folder(self, folder: Path) -> Optional[Path]:
+        """Return the most recently modified Agenda PDF in a case folder, or None."""
+        try:
+            candidates = sorted(
+                (p for p in folder.glob("*.pdf") if "agenda" in p.name.lower()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            return candidates[0] if candidates else None
+        except Exception:
+            return None
+
+    # Keep backward-compat alias (called from DnD / older code paths)
+    def on_clerk_select_agenda(self):
+        self.on_clerk_select_case_folder()
 
     def on_fill_agenda(self):
         wd = self._resolve_working_dir()
@@ -7562,6 +7920,10 @@ class AppBase:
             self.log(f"Agenda client output: {agenda_client_out}")
             print(f"Agenda internal latest: {agenda_internal_out}")
             print(f"Agenda client output: {agenda_client_out}")
+            # For Clerk: track the generated Agenda so K138 can use it (with CE/CID filled later)
+            _role = getattr(self, "profile_role", "BSO") or "BSO"
+            if _role == "Clerk" and agenda_client_out.exists():
+                self.state.clerk_agenda_file = agenda_client_out
             self._refresh_agenda_status()
             messagebox.showinfo("Agenda", f"Agenda generated:\n{agenda_client_out}")
         except Exception as e:
@@ -7756,7 +8118,8 @@ class AppBase:
             agenda_vals = extract_agenda_core_values(agenda_path)
             agenda_inv = _normalize_inventory_number(agenda_vals.get("inventory_number", ""))
             agenda_agent = self._normalize_agent_id(agenda_vals.get("agent_id", ""))
-            agenda_sied = _normalize_sied_value(agenda_vals.get("sied_number", ""), allow_raw=True)
+            # Read SIED directly — trust whatever the user typed, no format validation.
+            agenda_sied = _read_sied_raw_from_agenda_pdf(agenda_path)
 
             cached = read_values_latest_json(case_paths["values_latest_json"])
             cached_inv = _normalize_inventory_number(str(cached.get("inventory_number", "") or ""))
@@ -7822,7 +8185,16 @@ class AppBase:
             if agent:
                 self.state.last_agent_id = agent
             self._refresh_agenda_status()
-            messagebox.showinfo("Refreshed", f"Agenda refreshed.\nInventory: {inv}\nBarcode regenerated.\n\n{agenda_path}")
+
+            sied_msg = f"\nSeizure number (CE/CID): {agenda_sied}" if agenda_sied else ""
+            messagebox.showinfo("Refreshed", f"Agenda refreshed.\nInventory: {inv}{sied_msg}\nBarcode regenerated.\n\n{agenda_path}")
+
+            # If K138 was previously generated, regenerate it now so the seizure number
+            # (and any other updated Agenda values) are reflected in the K138 PDF.
+            k138_prior = resolve_latest_k138_pdf(wd, case_paths)
+            if k138_prior and k138_prior.exists():
+                self.log("  i K138 previously generated — regenerating with updated Agenda values...")
+                self._run_k138_from_agenda(agenda_path, "K138 updated from Agenda refresh")
         except Exception as e:
             self.log(f"Refresh from Agenda failed: {e}")
             import traceback
@@ -7832,9 +8204,16 @@ class AppBase:
             self._set_busy(False)
 
     def _run_k138_from_agenda(self, agenda_path: Path, mode_label: str):
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+        is_clerk = (role == "Clerk")
+
         wd = self._resolve_working_dir()
-        if not wd or not self.state.saisie_pdf_file:
-            messagebox.showwarning("Missing Case", "Select a SAISIE file and run Extract Values from Saise A faire first.")
+        if not wd:
+            messagebox.showwarning("Missing Case", "Select a case folder or agenda first.")
+            return
+        # Non-clerk requires a SAISIE file
+        if not is_clerk and not self.state.saisie_pdf_file:
+            messagebox.showwarning("Missing Case", "Select a SAISIE file and run Extract Values from Saisie A faire first.")
             return
         if not self.state.templates_folder:
             messagebox.showwarning("Missing Folder", "Select Configurations folder first.")
@@ -7851,13 +8230,56 @@ class AppBase:
             messagebox.showerror("Agenda Missing", f"Agenda file not found:\n{agenda_path}")
             return
 
-        case_paths = ensure_case_structure(wd, self.state.saisie_pdf_file)
-        synced_agenda = sync_agenda_files(case_paths)
-        if synced_agenda and synced_agenda.exists():
-            agenda_path = synced_agenda
+        # For Clerk: use agenda's parent as working dir; for others use normal saisie_pdf_file path
+        source_file = self.state.saisie_pdf_file or agenda_path
+        # Track whether we were given a real Agenda or just the Saisie D'affaire as fallback.
+        # Used later to avoid saving the Saisie D'affaire path as "agenda_output".
+        _original_agenda_path = agenda_path
+        _passed_saisie_as_agenda = source_file and (_original_agenda_path.resolve() == source_file.resolve())
+        case_paths = ensure_case_structure(wd, source_file)
+        # Only sync when we already have a real Agenda (not the Saisie-as-fallback path).
+        # If we sync while _passed_saisie_as_agenda is True, sync_agenda_files may copy a
+        # previously-generated hidden Agenda into the client folder, making it appear as
+        # though an Agenda was "generated" during a K138-only operation (the reported bug).
+        if not _passed_saisie_as_agenda:
+            synced_agenda = sync_agenda_files(case_paths)
+            if synced_agenda and synced_agenda.exists():
+                agenda_path = synced_agenda
         base_values = self._cached_k138_values(case_paths)
+
+        # Clerk fallback: search all hidden case folders in the working dir for any k138 base data
+        if not base_values and is_clerk:
+            try:
+                hidden_root = get_hidden_data_dir(wd)
+                if hidden_root.exists():
+                    for case_dir in hidden_root.iterdir():
+                        if not case_dir.is_dir():
+                            continue
+                        vjson = case_dir / "values_latest.json"
+                        if vjson.exists():
+                            try:
+                                data = json.loads(vjson.read_text(encoding="utf-8"))
+                                b = data.get("k138_values_base", {})
+                                if isinstance(b, dict) and b:
+                                    base_values = {str(k): "" if v is None else str(v) for k, v in b.items()}
+                                    self.log("  i Clerk: loaded K138 base values from case data")
+                                    break
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+        # For Clerk with no base values: build minimal values from agenda directly
+        if not base_values and is_clerk:
+            agenda_core = extract_agenda_core_values(agenda_path)
+            base_values = {
+                "description_inventory": _normalize_inventory_number(agenda_core.get("inventory_number", "")),
+                "seizing_officer": self._normalize_agent_id(agenda_core.get("agent_id", "")),
+            }
+            self.log("  i Clerk: generating K138 from Agenda values only (no prior extraction found)")
+
         if not base_values:
-            messagebox.showerror("Missing SAISIE Data", "Run Extract Values from Saise A faire first to prepare K138 base values.")
+            messagebox.showerror("Missing SAISIE Data", "Run Extract Values from Saisie A faire first to prepare K138 base values.")
             return
 
         # Inventory should stay SAISIE-extracted/base; Agenda values are fallback only.
@@ -7917,9 +8339,12 @@ class AppBase:
                 apply_saisie_affaire_manual_to_k138_values(base_values, manual_fields)
 
         cached_sied_raw = clean_value(str(cached.get("sied_number", "") or ""))
-        cached_sied = _normalize_sied_value(cached_sied_raw) if cached_sied_raw else ""
+        # allow_raw=True so user-confirmed values (e.g. set by Update Values from Agenda)
+        # are preserved even when the format is unconventional.
+        cached_sied = _normalize_sied_value(cached_sied_raw, allow_raw=True) if cached_sied_raw else ""
         cached_sied_confirmed = self._as_bool(cached.get("sied_confirmed", False))
-        if cached_sied and (not _is_valid_sied_value(cached_sied)):
+        # Only apply noise filter to unconfirmed cached values; trust explicit user confirmations.
+        if cached_sied and (not cached_sied_confirmed) and (not _is_valid_sied_value(cached_sied)):
             cached_sied = ""
         agenda_sied = _normalize_sied_value(agenda_core.get("sied_number", ""), allow_raw=True) or _normalize_sied_value(extract_sied_from_agenda(agenda_path))
         sied_source = ""
@@ -7932,12 +8357,11 @@ class AppBase:
                 agenda_sied = ""
         if agenda_sied:
             sied_source = "agenda-read"
-        if (not agenda_sied) and cached_sied_confirmed and cached_sied:
-            agenda_sied = cached_sied
-            if inv_guard and (_compact_alnum_token(agenda_sied) == _compact_alnum_token(inv_guard)):
-                agenda_sied = ""
-            if agenda_sied:
-                sied_source = "cache-confirmed"
+        if (not agenda_sied) and cached_sied_confirmed and cached_sied_raw:
+            # User explicitly confirmed this value via "Update Values from Agenda" —
+            # use it directly, no format guardrails.
+            agenda_sied = cached_sied_raw
+            sied_source = "cache-confirmed"
         if not agenda_sied:
             self.log("  i CE/CID not found in Agenda; leaving seizure number blank.")
 
@@ -7991,33 +8415,59 @@ class AppBase:
         except Exception as copy_err:
             self.log(f"  ! Could not copy k138_latest.pdf: {copy_err}")
 
-        update_values_latest_json(
-            case_paths["values_latest_json"],
-            {
-                "updated_at": _timestamp_iso(),
-                "source_file": str(self.state.saisie_pdf_file),
-                "working_directory": str(wd),
-                "case_folder_name": self.state.case_folder_name or wd.name,
-                "form_type": self.state.form_type,
-                "inventory_number": _normalize_inventory_number(k138_values.get("description_inventory", "")),
-                "agent_id": self._normalize_agent_id(k138_values.get("seizing_officer", "")),
-                "sied_number": agenda_sied,
-                "sied_confirmed": bool(clean_value(agenda_sied)),
-                "sied_source": sied_source if clean_value(agenda_sied) else "",
-                "agenda_output": str(agenda_path),
-                "k138_output": str(k138_output),
-                "k138_latest_pdf": str(case_paths["k138_latest_pdf"]),
-                "k138_values_base": base_values,
-            },
-        )
+        _k138_patch: Dict[str, object] = {
+            "updated_at": _timestamp_iso(),
+            "source_file": str(self.state.saisie_pdf_file),
+            "working_directory": str(wd),
+            "case_folder_name": self.state.case_folder_name or wd.name,
+            "form_type": self.state.form_type,
+            "inventory_number": _normalize_inventory_number(k138_values.get("description_inventory", "")),
+            "agent_id": self._normalize_agent_id(k138_values.get("seizing_officer", "")),
+            "sied_number": agenda_sied,
+            "sied_confirmed": bool(clean_value(agenda_sied)),
+            "sied_source": sied_source if clean_value(agenda_sied) else "",
+            "k138_output": str(k138_output),
+            "k138_latest_pdf": str(case_paths["k138_latest_pdf"]),
+            "k138_values_base": base_values,
+        }
+        # Only record agenda_output when we actually used a real Agenda PDF.
+        # Avoids falsely marking an Agenda as generated when K138 was built
+        # directly from the Saisie D'affaire (Clerk workflow, no prior Agenda).
+        if not _passed_saisie_as_agenda:
+            _k138_patch["agenda_output"] = str(agenda_path)
+        update_values_latest_json(case_paths["values_latest_json"], _k138_patch)
         self.log(f"  ✓ {mode_label}: {k138_output}")
         self._refresh_agenda_status()
         messagebox.showinfo("K138", f"{mode_label}:\n{k138_output}")
 
     def on_generate_k138(self):
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+
+        # Clerk path: use Agenda if it already exists in the folder; otherwise use
+        # the Saisie D'affaire directly (CE/CID field will be blank — officer fills it in).
+        if role == "Clerk":
+            wd = self._resolve_working_dir()
+            if not wd or not self.state.saisie_pdf_file:
+                messagebox.showwarning("Missing Case", "Select a case folder first (Agenda tab → Select Case Folder).")
+                return
+            # Prefer an existing Agenda (has CE/CID filled in by officer)
+            existing_agenda = getattr(self.state, "clerk_agenda_file", None)
+            if not (existing_agenda and existing_agenda.exists()):
+                existing_agenda = self._find_agenda_in_folder(wd)
+                if existing_agenda:
+                    self.state.clerk_agenda_file = existing_agenda
+            source_for_k138 = (existing_agenda if (existing_agenda and existing_agenda.exists())
+                               else self.state.saisie_pdf_file)
+            self._set_busy(True, "Generating K138...")
+            try:
+                self._run_k138_from_agenda(source_for_k138, "K138 generated")
+            finally:
+                self._set_busy(False)
+            return
+
         wd = self._resolve_working_dir()
         if not wd or not self.state.saisie_pdf_file:
-            messagebox.showwarning("Missing Case", "Select a SAISIE file and run Extract Values from Saise A faire first.")
+            messagebox.showwarning("Missing Case", "Select a SAISIE file and run Extract Values from Saisie A faire first.")
             return
         case_paths = ensure_case_structure(wd, self.state.saisie_pdf_file)
         agenda_path = self._agenda_existing_path(case_paths)
@@ -8062,16 +8512,9 @@ class AppBase:
             ent.insert(0, str(p))
 
     def on_browse_templates_folder(self):
-        messagebox.showinfo(
-            "Configurations",
-            "Configuration steps:\n"
-            "1) Select the folder that contains form templates and form notes.\n"
-            "2) Enter your badge number when prompted.\n\n"
-            "You can re-open Configurations anytime to change these values.",
-        )
         initial_dir = str(self.state.templates_folder or self.last_saisie_folder or Path.cwd())
         p_raw = filedialog.askdirectory(
-            title="Select folder with forms templates and form notes",
+            title="Select templates folder",
             initialdir=initial_dir,
         )
         if not p_raw:
@@ -8079,26 +8522,11 @@ class AppBase:
         p = Path(p_raw)
         self.state.templates_folder = p
         set_config_path("paths", "templates_folder", p)
-
-        default_badge = re.sub(r"\D", "", self.state.badge_number or self.varBadgeNumber.get() or "")
-        badge = simpledialog.askstring(
-            "Badge Number",
-            "Enter your badge number:",
-            parent=self.root,
-            initialvalue=default_badge,
-        )
-        if badge is not None:
-            badge_clean = re.sub(r"\D", "", clean_value(badge))
-            self.state.badge_number = badge_clean
-            self.varBadgeNumber.set(badge_clean)
-            set_config_text("user", "badge_number", badge_clean)
-            if hasattr(self, "varSaisieAffaireFields") and ("agent_badge" in self.varSaisieAffaireFields):
-                self.varSaisieAffaireFields["agent_badge"].set(badge_clean)
-
         self._prefill_saisie_affaire_defaults()
         self._refresh_config_summary()
-        self.log(f"Configurations updated: folder={p.name}, badge={self.state.badge_number or '-'}")
+        self.log(f"Configurations updated: folder={p.name}")
         self._refresh_agenda_status()
+        self._auto_extract_if_ready()
     
     def on_browse_saisie_file(self):
         # Default to working_case_example if no saved folder, or use saved folder
@@ -8131,8 +8559,23 @@ class AppBase:
             if not _is_transient_upload_path(p.parent):
                 set_config_path("paths", "saisie_folder", p.parent)
                 self.last_saisie_folder = p.parent
+            set_config_path("paths", "last_saisie_file", p)
             self._set_working_directory(p, refresh_status=False)
             self.log(f"Input File: {p.name}")
+            self._auto_extract_if_ready()
+
+    def _auto_extract_if_ready(self):
+        """Auto-trigger value extraction when both templates and SAISIE file are set (BSO/Supervisor only)."""
+        role = getattr(self, "profile_role", "BSO") or "BSO"
+        if role == "Clerk":
+            return  # Clerk never needs extraction
+        if not self.state.templates_folder or not self.state.saisie_pdf_file:
+            return
+        if not self.state.saisie_pdf_file.exists():
+            return
+        if getattr(self, "_busy", False):
+            return
+        self.on_process_pdf()
 
     def on_form_type_changed(self):
         self.state.form_type = self.form_type_var.get()
@@ -8165,13 +8608,7 @@ class AppBase:
             is_inside_templates = False
 
         if is_inside_templates:
-            # Allow processing; output will go to same folder as input
-            messagebox.showwarning(
-                "Configurations folder",
-                "The selected SAISIE PDF is in the same folder as your configurations.\n\n"
-                "Processing will continue. Outputs will be saved in a case subfolder under that folder.\n\n"
-                "Tip: For a cleaner setup, use a separate working case folder for completed SAISIE PDFs."
-            )
+            self.log("  [WARN] SAISIE file is inside the configurations folder — outputs will be saved there too.")
 
         # working_dir = folder where input Saisie file lives (output goes here)
         if self.state.working_dir:
@@ -8241,7 +8678,13 @@ class AppBase:
             if not is_docx and not is_image:
                 saisie_template = find_saisie_template(self.state.templates_folder)
                 if not saisie_template:
-                    messagebox.showerror("Error", f"Could not find SAISIE template PDF in:\n{self.state.templates_folder}\n\nLooking for PDFs with keywords: 'saisie' and 'template'")
+                    messagebox.showerror(
+                        "Missing SAISIE Template",
+                        f"Could not find SAISIE template PDF in:\n{self.state.templates_folder}\n\n"
+                        f"Make sure your Configurations folder contains the blank SAISIE PDF template "
+                        f"(e.g. 'SAISIE À FAIRE_francompact 2025.pdf').\n\n"
+                        f"Go to Configurations (top-right) and re-select the correct templates folder.",
+                    )
                     return
                 self.log(f"  [OK] Found SAISIE template: {saisie_template.name}")
             elif is_image:
@@ -8412,16 +8855,10 @@ class AppBase:
             self.log("Next step: Generate Agenda. After Agenda is saved, generate K138 from the K138 tab.")
             if validation_errors:
                 messagebox.showwarning(
-                    "Processed With Warnings",
-                    "SAISIE was processed, but some K138 critical fields are still missing.\n\n"
-                    "You can still fill Agenda first, then review values before generating K138.\n\n"
-                    + "\n".join(validation_errors),
-                )
-            else:
-                messagebox.showinfo(
-                    "Processed",
-                    f"Successfully processed:\n{self.state.saisie_pdf_file.name}\n\n"
-                    "Agenda is now ready to be filled first."
+                    "Missing Fields Detected",
+                    "SAISIE was processed, but some K138 fields could not be read:\n\n"
+                    + "\n".join(validation_errors)
+                    + "\n\nYou can still generate Agenda and K138 — review missing fields before finalising.",
                 )
 
         except Exception as e:
@@ -8435,33 +8872,370 @@ class AppBase:
 
 class AppDnD(AppBase):
     def _init_dnd(self):
-        if HAVE_DND:
-            # Enable drag-and-drop for SAISIE input file entry
-            try:
-                self.entSaisieFile.drop_target_register(DND_FILES)
-                self.entSaisieFile.dnd_bind('<<Drop>>', self.on_drop_saisie_file)
-            except Exception:
-                pass
+        if not HAVE_DND:
+            return
+
+        # ── Saisie file entry ────────────────────────────────────────
+        try:
+            self.entSaisieFile.drop_target_register(DND_FILES)
+            self.entSaisieFile.dnd_bind('<<Drop>>',      self.on_drop_saisie_file)
+            self.entSaisieFile.dnd_bind('<<DragEnter>>', self._on_drag_enter_saisie)
+            self.entSaisieFile.dnd_bind('<<DragLeave>>', self._on_drag_leave_saisie)
+        except Exception:
+            pass
+
+        # ── Working Folder (Select Folder) tab ──────────────────────
+        try:
+            self.tabSelectFolder.drop_target_register(DND_FILES)
+            self.tabSelectFolder.dnd_bind('<<Drop>>',      self.on_drop_select_folder)
+            self.tabSelectFolder.dnd_bind('<<DragEnter>>', self._on_drag_enter_select_folder)
+            self.tabSelectFolder.dnd_bind('<<DragLeave>>', self._on_drag_leave_select_folder)
+        except Exception:
+            pass
+
+        # ── Agenda tab ───────────────────────────────────────────────
+        try:
+            self.tabAgenda.drop_target_register(DND_FILES)
+            self.tabAgenda.dnd_bind('<<Drop>>',      self.on_drop_agenda_folder)
+            self.tabAgenda.dnd_bind('<<DragEnter>>', self._on_drag_enter_agenda)
+            self.tabAgenda.dnd_bind('<<DragLeave>>', self._on_drag_leave_agenda)
+        except Exception:
+            pass
+
+    # ── Working Folder drag-drop handlers ───────────────────────────
+    def on_drop_select_folder(self, event):
+        self._on_drag_leave_select_folder(None)
+        try:
+            items = self.root.tk.splitlist(event.data)
+        except Exception:
+            items = []
+        if items:
+            self.root.after(1, lambda: self._apply_dropped_select_folder(items[0]))
+
+    def _apply_dropped_select_folder(self, raw_path: str):
+        try:
+            p = Path(raw_path)
+            folder = p if p.is_dir() else p.parent
+            if folder.exists():
+                self._set_active_case_folder(folder)
+        except Exception as e:
+            self.log(f"Error handling Working Folder drag-and-drop: {e}")
+
+    def _on_drag_enter_select_folder(self, event):
+        try:
+            if not hasattr(self, "_select_folder_drop_lbl"):
+                self._select_folder_drop_lbl = tk.Label(
+                    self.tabSelectFolder,
+                    text="↓  Drop folder here to set as Active Case Folder  ↓",
+                    font=("Segoe UI", 11),
+                    fg="#1F4E79",
+                    bg="#E3F0FB",
+                    relief="solid",
+                    bd=1,
+                    pady=14,
+                )
+            self._select_folder_drop_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self._select_folder_drop_lbl.lift()
+        except Exception:
+            pass
+
+    def _on_drag_leave_select_folder(self, *_):
+        try:
+            if hasattr(self, "_select_folder_drop_lbl"):
+                self._select_folder_drop_lbl.place_forget()
+        except Exception:
+            pass
+
+    # ── Drag hover helpers ───────────────────────────────────────────
+    def _on_drag_enter_saisie(self, event):
+        try:
+            self.boxSaisieFile.configure(text="↓  Drop Saisie à Faire here  ↓")
+            self.entSaisieFile.configure(style="DragOver.TEntry")
+        except Exception:
+            pass
+
+    def _on_drag_leave_saisie(self, event):
+        try:
+            self.boxSaisieFile.configure(text="Select Saisie à Faire")
+            self.entSaisieFile.configure(style="TEntry")
+        except Exception:
+            pass
+
+    def _on_drag_enter_agenda(self, event):
+        try:
+            if not hasattr(self, "_agenda_drop_lbl"):
+                self._agenda_drop_lbl = tk.Label(
+                    self.tabAgenda,
+                    text="↓  Drop file or folder here to set case directory  ↓",
+                    font=("Segoe UI", 11),
+                    fg="#1F4E79",
+                    bg="#E3F0FB",
+                    relief="solid",
+                    bd=1,
+                    pady=14,
+                )
+            self._agenda_drop_lbl.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self._agenda_drop_lbl.lift()
+        except Exception:
+            pass
+
+    def _on_drag_leave_agenda(self, event):
+        try:
+            if hasattr(self, "_agenda_drop_lbl"):
+                self._agenda_drop_lbl.place_forget()
+        except Exception:
+            pass
+
+    def on_drop_agenda_folder(self, event):
+        """Handle drag-and-drop on the Agenda tab — sets the active case folder."""
+        self._on_drag_leave_agenda(None)  # hide overlay immediately
+        try:
+            items = self.root.tk.splitlist(event.data)
+        except Exception:
+            items = []
+        if items:
+            self.root.after(1, lambda: self._apply_dropped_agenda_folder(items[0]))
+
+    def _apply_dropped_agenda_folder(self, raw_path: str):
+        """Apply a dropped path on the Agenda tab (deferred to avoid Windows DnD message conflicts)."""
+        try:
+            p = Path(raw_path)
+            # Folder dropped → use it directly as case folder
+            if p.is_dir():
+                self._set_active_case_folder(p)
+                return
+            # File dropped → use its parent directory as case folder
+            if p.exists():
+                parent = p.parent
+                self._set_active_case_folder(parent)
+                # If it looks like a Saisie file, also load it
+                if p.suffix.lower() in ('.pdf', '.docx'):
+                    self._reset_case_runtime_state(keep_case_folder=True)
+                    self.state.saisie_pdf_file = p
+                    self._set_entry(self.entSaisieFile, p)
+                    self.log(f"Dropped: {p.name}")
+        except Exception as e:
+            self.log(f"Error handling Agenda drag-and-drop: {e}")
     
     def on_drop_saisie_file(self, event):
         """Handle drag-and-drop of SAISIE input file."""
+        self._on_drag_leave_saisie(None)  # restore label immediately
         try:
             files = self.root.tk.splitlist(event.data)
-            if files:
-                file_path = Path(files[0])
-                if file_path.exists() and file_path.suffix.lower() in ('.pdf', '.docx'):
-                    self._reset_case_runtime_state(keep_case_folder=True)
-                    self.state.saisie_pdf_file = file_path
-                    self._set_entry(self.entSaisieFile, file_path)
-                    if not _is_transient_upload_path(file_path.parent):
-                        set_config_path("paths", "saisie_folder", file_path.parent)
-                        self.last_saisie_folder = file_path.parent
-                    self._set_working_directory(file_path, refresh_status=False)
-                    self.log(f"Dropped file kept: {file_path.name}")
-                else:
-                    self.log(f"Dropped file must be PDF or Word (.docx): {file_path.name}")
+        except Exception:
+            files = []
+        if files:
+            self.root.after(1, lambda: self._apply_dropped_saisie_file(files[0]))
+
+    def _apply_dropped_saisie_file(self, raw_path: str):
+        """Apply a dropped SAISIE file path (deferred to avoid Windows DnD message conflicts)."""
+        try:
+            file_path = Path(raw_path)
+            if file_path.exists() and file_path.suffix.lower() in ('.pdf', '.docx'):
+                self._reset_case_runtime_state(keep_case_folder=True)
+                self.state.saisie_pdf_file = file_path
+                self._set_entry(self.entSaisieFile, file_path)
+                if not _is_transient_upload_path(file_path.parent):
+                    set_config_path("paths", "saisie_folder", file_path.parent)
+                    self.last_saisie_folder = file_path.parent
+                set_config_path("paths", "last_saisie_file", file_path)
+                self._set_working_directory(file_path, refresh_status=False)
+                self.log(f"Dropped: {file_path.name}")
+                self._auto_extract_if_ready()
+            else:
+                self.log(f"Dropped file must be PDF or Word (.docx): {Path(raw_path).name}")
         except Exception as e:
             self.log(f"Error handling drag-and-drop: {e}")
+
+
+def _show_profile_splash() -> tuple:
+    """
+    Show a clean profile selection splash screen.
+    Returns (profile_role, profile_badge).
+    BSO role shows a badge number entry; other roles need no extra input.
+    Remembers last selection per machine.
+    """
+    ACCENT        = "#1F4E79"
+    CARD_BG       = "#FFFFFF"
+    SELECTED_BG   = "#E3F0FB"
+    SELECTED_BORDER = "#1F4E79"
+    NORMAL_BORDER = "#D0D7DE"
+    # Fallback circle colours when image files are missing
+    AVATAR_COLORS    = {"BSO": "#1F4E79", "Clerk": "#217346", "Supervisor": "#5B2C8D"}
+    AVATAR_INITIALS  = {"BSO": "B",       "Clerk": "C",       "Supervisor": "S"}
+    # Image file inside assets/
+    AVATAR_IMAGES    = {
+        "BSO":        "assets/avatar_bso.png",
+        "Clerk":      "assets/clerk.png",
+        "Supervisor": "assets/avatar_supervisor.png",
+    }
+    ROLE_DESC = {
+        "BSO":        "Working Folder\nSaisie d'affaire\nAgenda",
+        "Clerk":      "Working Folder\nAgenda  ·  K138\nSaisie d'intérêt",
+        "Supervisor": "Full access\nAll tabs",
+    }
+
+    saved_role  = get_config_text("user", "profile_role", "BSO") or "BSO"
+    saved_badge = get_config_text("user", "badge_number", "")    or ""
+
+    result = {"role": saved_role, "badge": saved_badge, "confirmed": False}
+
+    splash = tk.Tk()
+    splash.title("Radiance Copilot — Select Profile")
+    splash.configure(bg=ACCENT)
+    splash.resizable(False, False)
+
+    splash.update_idletasks()
+    w, h = 580, 440
+    sw, sh = splash.winfo_screenwidth(), splash.winfo_screenheight()
+    splash.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    app_ico_path = resolve_asset_path("photos/Radiance-copilot-icon.ico", "Radiance-copilot-icon.ico")
+    try:
+        if app_ico_path:
+            splash.iconbitmap(app_ico_path)
+    except Exception:
+        pass
+
+    # Pre-load avatar images (kept in list to prevent GC)
+    _avatar_tk_images: dict = {}
+    AVATAR_SIZE = 80  # px — displayed size inside card
+    for role, rel_path in AVATAR_IMAGES.items():
+        img_path = resolve_asset_path(rel_path)
+        if img_path and HAVE_PIL and Image and ImageTk:
+            try:
+                pil_img = Image.open(img_path).convert("RGBA")
+                pil_img = pil_img.resize((AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+                _avatar_tk_images[role] = ImageTk.PhotoImage(pil_img)
+            except Exception:
+                pass
+
+    # ── Header ──────────────────────────────────────────────────
+    header = tk.Frame(splash, bg=ACCENT)
+    header.pack(fill="x")
+    tk.Label(header, text="Radiance Copilot",
+             font=("Segoe UI Semibold", 16), fg="#FFFFFF", bg=ACCENT).pack(pady=(18, 2))
+    tk.Label(header, text="Select your user profile to continue",
+             font=("Segoe UI", 10), fg="#DCE8F4", bg=ACCENT).pack(pady=(0, 14))
+
+    # ── Bottom area (badge entry) — created BEFORE cards so _select_role can reference it ──
+    bottom = tk.Frame(splash, bg="#F0F4F8")
+    bottom.pack(fill="x", pady=0)
+
+    badge_var = tk.StringVar(value=saved_badge)
+    badge_row = tk.Frame(bottom, bg="#F0F4F8")
+    tk.Label(badge_row, text="Badge number:", font=("Segoe UI", 10), bg="#F0F4F8").grid(
+        row=0, column=0, padx=(0, 8))
+    badge_entry = ttk.Entry(badge_row, textvariable=badge_var, width=20)
+    badge_entry.grid(row=0, column=1)
+
+    if saved_role == "BSO":
+        badge_row.pack(pady=(10, 4))
+
+    # ── Role cards ───────────────────────────────────────────────
+    cards_frame = tk.Frame(splash, bg="#F0F4F8")
+    cards_frame.pack(fill="x", pady=0)
+
+    card_frames: dict = {}
+
+    def _set_bg_recursive(widget, bg):
+        try:
+            # Don't recolor Label widgets that hold images — they look odd with a tinted bg
+            if not isinstance(widget, tk.Label) or not widget.cget("image"):
+                widget.configure(bg=bg)
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            _set_bg_recursive(child, bg)
+
+    def _refresh_cards(selected_role):
+        for role, card in card_frames.items():
+            is_sel = (role == selected_role)
+            card.configure(
+                bg=SELECTED_BG if is_sel else CARD_BG,
+                highlightbackground=SELECTED_BORDER if is_sel else NORMAL_BORDER,
+                highlightthickness=2 if is_sel else 1,
+            )
+            for child in card.winfo_children():
+                _set_bg_recursive(child, SELECTED_BG if is_sel else CARD_BG)
+
+    def _select_role(role):
+        result["role"] = role
+        _refresh_cards(role)
+        if role == "BSO":
+            badge_row.pack(pady=(10, 4))
+            badge_entry.focus_set()
+        else:
+            badge_row.pack_forget()
+
+    for i, role in enumerate(["BSO", "Clerk", "Supervisor"]):
+        card = tk.Frame(
+            cards_frame, bg=CARD_BG,
+            highlightbackground=NORMAL_BORDER, highlightthickness=1, cursor="hand2",
+        )
+        card.grid(row=0, column=i, padx=12, pady=16, ipadx=12, ipady=10, sticky="nsew")
+        cards_frame.columnconfigure(i, weight=1)
+        card_frames[role] = card
+
+        tk_img = _avatar_tk_images.get(role)
+        if tk_img:
+            # Real photo — use a Label with image
+            img_lbl = tk.Label(card, image=tk_img, bg=CARD_BG, cursor="hand2")
+            img_lbl.pack(pady=(12, 6))
+        else:
+            # Fallback: draw a coloured circle with an initial
+            cv = tk.Canvas(card, width=AVATAR_SIZE, height=AVATAR_SIZE,
+                           bg=CARD_BG, highlightthickness=0)
+            cv.pack(pady=(12, 6))
+            cv.create_oval(4, 4, AVATAR_SIZE - 4, AVATAR_SIZE - 4,
+                           fill=AVATAR_COLORS[role], outline=AVATAR_COLORS[role])
+            cv.create_text(AVATAR_SIZE // 2, AVATAR_SIZE // 2,
+                           text=AVATAR_INITIALS[role],
+                           font=("Segoe UI Semibold", 26), fill="#FFFFFF")
+
+        tk.Label(card, text=role, font=("Segoe UI Semibold", 12), bg=CARD_BG).pack()
+        tk.Label(card, text=ROLE_DESC[role], font=("Segoe UI", 8), fg="#555555",
+                 bg=CARD_BG, justify="center").pack(pady=(4, 10))
+
+        for widget in [card] + list(card.winfo_children()):
+            try:
+                widget.bind("<Button-1>", lambda e, r=role: _select_role(r))
+            except Exception:
+                pass
+
+    _refresh_cards(result["role"])
+
+    # ── Continue button ──────────────────────────────────────────
+    btn_row = tk.Frame(splash, bg=ACCENT)
+    btn_row.pack(fill="x", side="bottom")
+
+    def _confirm():
+        badge = re.sub(r"\D", "", badge_var.get().strip())
+        result["badge"] = badge
+        result["confirmed"] = True
+        set_config_text("user", "profile_role", result["role"])
+        set_config_text("user", "badge_number", badge)
+        splash.destroy()
+
+    tk.Button(
+        btn_row, text="Continue  →",
+        font=("Segoe UI Semibold", 11),
+        bg="#2E86DE", fg="#FFFFFF",
+        activebackground="#1A6BBD", activeforeground="#FFFFFF",
+        relief="flat", bd=0, padx=24, pady=10, cursor="hand2",
+        command=_confirm,
+    ).pack(pady=12)
+
+    # Closing the window (X button) = user cancelled — entire app should not open
+    splash.protocol("WM_DELETE_WINDOW", splash.destroy)
+    splash.bind("<Return>", lambda e: _confirm())
+    if saved_role == "BSO":
+        badge_entry.focus_set()
+    splash.mainloop()
+
+    if not result.get("confirmed"):
+        return None, None  # Signal to main() that user cancelled
+    return result.get("role", "BSO"), result.get("badge", "")
 
 
 def main():
@@ -8469,14 +9243,27 @@ def main():
     if lock is None:
         show_single_instance_warning()
         return
-    if TkinterDnD is not None and DND_FILES is not None:
-        root = TkinterDnD.Tk()
-        AppDnD(root)
-    else:
-        root = tk.Tk()
-        AppBase(root)
+
     try:
-        root.mainloop()
+        restart = True
+        while restart:
+            restart = False
+            profile_role, profile_badge = _show_profile_splash()
+            if profile_role is None:
+                break  # User closed splash — exit completely
+
+            if TkinterDnD is not None and DND_FILES is not None:
+                root = TkinterDnD.Tk()
+                AppDnD(root, profile_role=profile_role, profile_badge=profile_badge)
+            else:
+                root = tk.Tk()
+                AppBase(root, profile_role=profile_role, profile_badge=profile_badge)
+
+            root.mainloop()
+
+            # If "Change Profile" was clicked, root was tagged before destroy — loop.
+            if getattr(root, "_change_profile_requested", False):
+                restart = True
     finally:
         release_single_instance_lock(lock)
 
@@ -8485,5 +9272,5 @@ if __name__ == "__main__":
     main()
 
 # Build EXE (Windows, example):
-#   python -m PyInstaller --onefile --windowed --clean --icon Radiance-copilot-icon.ico --add-data "Radiance-copilot-icon.ico;." --add-data "Radiance-copilot-icon.png;." --add-data "fill_k138_notice.py;." --add-data "fill_saisie_interet.py;." --hidden-import fill_k138_notice --hidden-import fill_saisie_interet saisie_a_faire_extractor.py
+#   python -m PyInstaller --onefile --windowed --clean --icon photos/Radiance-copilot-icon.ico --add-data "photos;photos" --add-data "assets;assets" --add-data "fill_k138_notice.py;." --add-data "fill_saisie_interet.py;." --hidden-import fill_k138_notice --hidden-import fill_saisie_interet saisie_a_faire_extractor.py
 #endregion

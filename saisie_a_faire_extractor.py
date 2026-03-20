@@ -1372,16 +1372,31 @@ def _dedupe_lines_keep_order(s: str) -> str:
     return "\n".join(out)
 
 _COUNTRY_CANON = {
+    # Canada
     "CANADA": "CANADA",
+    "CAN": "CANADA",
+    # USA — English and French variants
     "USA": "USA",
-    "JSA": "USA",
-    "ISA": "USA",
-    "U5A": "USA",
+    "JSA": "USA",   # OCR artifact
+    "ISA": "USA",   # OCR artifact
+    "U5A": "USA",   # OCR artifact
     "US": "USA",
     "UNITED STATES": "USA",
     "UNITED STATES OF AMERICA": "USA",
+    "ETATS-UNIS": "USA",
+    "ÉTATS-UNIS": "USA",
+    "ETATS UNIS": "USA",
+    "ÉTATS UNIS": "USA",
+    "E.U.": "USA",
+    # UK — English and French variants
     "UK": "UK",
     "UNITED KINGDOM": "UK",
+    "ROYAUME-UNI": "UK",
+    "ROYAUME UNI": "UK",
+    "GB": "UK",
+    "GREAT BRITAIN": "UK",
+    "GRANDE-BRETAGNE": "UK",
+    "GRANDE BRETAGNE": "UK",
 }
 
 _RE_POSTAL_CA = re.compile(r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s*\d[ABCEGHJ-NPRSTV-Z]\d\b", re.IGNORECASE)
@@ -1425,9 +1440,9 @@ def _infer_country_from_text(line: str) -> str:
         return "UK"
     if "CANADA" in t:
         return "CANADA"
-    if re.search(r"\b(USA|US|UNITED STATES)\b", t):
+    if re.search(r"\b(USA|US|UNITED STATES|ETATS-UNIS|ÉTATS-UNIS|ETATS UNIS|ÉTATS UNIS)\b", t):
         return "USA"
-    if re.search(r"\b(UK|UNITED KINGDOM)\b", t):
+    if re.search(r"\b(UK|UNITED KINGDOM|ROYAUME-UNI|ROYAUME UNI|GREAT BRITAIN|GRANDE-BRETAGNE)\b", t):
         return "UK"
     return ""
 
@@ -3032,6 +3047,14 @@ def build_k138_values_from_saisie(top: Dict[str, str], completed_pdf: Path, form
     if _is_weak_item_text(item_desc):
         # Prefer declaration as fallback rather than leaking sender/recipient labels.
         item_desc = declared_single or ""
+    # Store full description for Narrative; K138 uses a shorter version.
+    d["description_item_full"] = item_desc
+    # SHORT: truncate at 150 chars on a word boundary for K138 form field.
+    _short_limit = 150
+    if len(item_desc) > _short_limit:
+        truncated = item_desc[:_short_limit]
+        last_space = truncated.rfind(" ")
+        item_desc = (truncated[:last_space] if last_space > 80 else truncated).rstrip(" ,;") + "…"
     d["description_item"] = item_desc
 
     # legal_notice: passed separately so fill_k138 can append it exactly once (no duplication)
@@ -5798,35 +5821,8 @@ class AppBase:
         ttk.Label(self.boxSaisieFile, text="Drag & drop your Saisie à Faire (PDF or Word) here, or use Browse to select it.",
                  font=("TkDefaultFont", 8)).grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
-        # --- Form Type Radio Buttons (K138 only) ---
-        self.boxFormType = ttk.LabelFrame(frm, text="K138 Form Type (K138 only)", padding=8)
-        self.boxFormType.grid(row=5, column=0, sticky="ew", pady=(8, 0))
-        
+        # Form type var (selector moved into Saisie D'affaire tab — see below)
         self.form_type_var = tk.StringVar(value=self.state.form_type)
-        
-        ttk.Radiobutton(
-            self.boxFormType,
-            text="Cannabis-Stupefiant",
-            variable=self.form_type_var,
-            value="Cannabis-Stupefiant",
-            command=self.on_form_type_changed
-        ).grid(row=0, column=0, sticky="w", padx=(0, 20))
-        
-        ttk.Radiobutton(
-            self.boxFormType,
-            text="Knives-Arms",
-            variable=self.form_type_var,
-            value="Knives-Arms",
-            command=self.on_form_type_changed
-        ).grid(row=0, column=1, sticky="w", padx=(0, 20))
-        
-        ttk.Radiobutton(
-            self.boxFormType,
-            text="Stupefiant-Others (default)",
-            variable=self.form_type_var,
-            value="Stupefiant-Others",
-            command=self.on_form_type_changed
-        ).grid(row=0, column=2, sticky="w")
 
         # Extraction is now automatic — no manual button needed.
 
@@ -5837,17 +5833,20 @@ class AppBase:
 
         self.tabSelectFolder = ttk.Frame(self.tabs)
         self.tabSaisieAffaire = ttk.Frame(self.tabs)
-        self.tabK138 = ttk.Frame(self.tabs)
         self.tabAgenda = ttk.Frame(self.tabs)
+        self.tabK138 = ttk.Frame(self.tabs)
+        self.tabNarrative = ttk.Frame(self.tabs)
         self.tabSaisieInteret = ttk.Frame(self.tabs)
-        self.tabs.add(self.tabSelectFolder, text="Select Folder")
-        self.tabs.add(self.tabSaisieAffaire, text="Saisie D'affaire")
-        self.tabs.add(self.tabAgenda, text="Agenda")
-        self.tabs.add(self.tabK138, text="K138")
-        self.tabs.add(self.tabSaisieInteret, text="Saisie d'interet")
+        self.tabs.add(self.tabSelectFolder, text="1: Select Folder")
+        self.tabs.add(self.tabSaisieAffaire, text="2: Saisie D'affaire")
+        self.tabs.add(self.tabAgenda, text="3: Agenda")
+        self.tabs.add(self.tabK138, text="4: K138")
+        self.tabs.add(self.tabNarrative, text="5: Narrative")
+        self.tabs.add(self.tabSaisieInteret, text="6: Saisie d'interet")
         self.tabs.tab(self.tabSaisieAffaire, state="disabled")
         self.tabs.tab(self.tabAgenda, state="disabled")
         self.tabs.tab(self.tabK138, state="disabled")
+        self.tabs.tab(self.tabNarrative, state="disabled")
         self.tabs.tab(self.tabSaisieInteret, state="disabled")
 
         # Select Folder tab
@@ -5925,18 +5924,39 @@ class AppBase:
             )
 
         checks_row = ttk.Frame(self.tabSaisieAffaire)
-        checks_row.grid(row=2, column=0, sticky="w", padx=8, pady=(4, 6))
+        checks_row.grid(row=2, column=0, sticky="w", padx=8, pady=(4, 2))
         self.varCheckSaisie = tk.BooleanVar(value=False)
         self.varCheckConfiscation = tk.BooleanVar(value=False)
         self.varCheckK9 = tk.BooleanVar(value=False)
         self.varCheckSaisieEnvergure = tk.BooleanVar(value=False)
+        self.varCheckLabo = tk.BooleanVar(value=False)
         ttk.Checkbutton(checks_row, text="SAISIE", variable=self.varCheckSaisie).grid(row=0, column=0, padx=(0, 10))
         ttk.Checkbutton(checks_row, text="CONFISCATION", variable=self.varCheckConfiscation).grid(row=0, column=1, padx=(0, 10))
         ttk.Checkbutton(checks_row, text="K9", variable=self.varCheckK9).grid(row=0, column=2, padx=(0, 10))
-        ttk.Checkbutton(checks_row, text="SAISIE D'ENVERGURE", variable=self.varCheckSaisieEnvergure).grid(row=0, column=3)
+        ttk.Checkbutton(checks_row, text="SAISIE D'ENVERGURE", variable=self.varCheckSaisieEnvergure).grid(row=0, column=3, padx=(0, 10))
+        ttk.Checkbutton(checks_row, text="LABO", variable=self.varCheckLabo, command=self._on_labo_changed).grid(row=0, column=4)
+
+        # Seizure type selector (moved from main frame so Clerk can also see it)
+        self.boxFormType = ttk.LabelFrame(self.tabSaisieAffaire, text="Seizure Type (K138 / Narrative)", padding=6)
+        self.boxFormType.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 4))
+        ttk.Radiobutton(
+            self.boxFormType, text="Cannabis / Stupéfiant",
+            variable=self.form_type_var, value="Cannabis-Stupefiant",
+            command=self.on_form_type_changed,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 20))
+        ttk.Radiobutton(
+            self.boxFormType, text="Armes / Arms",
+            variable=self.form_type_var, value="Knives-Arms",
+            command=self.on_form_type_changed,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 20))
+        ttk.Radiobutton(
+            self.boxFormType, text="Autre / Other (default)",
+            variable=self.form_type_var, value="Stupefiant-Others",
+            command=self.on_form_type_changed,
+        ).grid(row=0, column=2, sticky="w")
 
         saisie_actions = ttk.Frame(self.tabSaisieAffaire)
-        saisie_actions.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 4))
+        saisie_actions.grid(row=4, column=0, sticky="w", padx=8, pady=(0, 4))
         ttk.Button(
             saisie_actions,
             text="Update from Saisie D'affaire",
@@ -5951,7 +5971,7 @@ class AppBase:
         ).grid(row=0, column=1)
 
         saisie_found_row = ttk.Frame(self.tabSaisieAffaire)
-        saisie_found_row.grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
+        saisie_found_row.grid(row=5, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Label(saisie_found_row, text="Saisie D'affaire in case folder:").grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Label(saisie_found_row, textvariable=self.varSaisieAffaireFound).grid(row=0, column=1, sticky="w")
 
@@ -6033,6 +6053,41 @@ class AppBase:
 
         # Auto-refresh agenda status when user switches to the Agenda tab
         self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # Narrative tab (BSO only)
+        self.tabNarrative.columnconfigure(0, weight=1)
+        self.tabNarrative.rowconfigure(2, weight=1)
+        self.varNarrativeStatus = tk.StringVar(value="")
+        ttk.Label(
+            self.tabNarrative,
+            text="Narrative — complete after Saisie D'affaire is processed.",
+            font=("TkDefaultFont", 9),
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=(10, 4))
+
+        narrative_opts = ttk.Frame(self.tabNarrative)
+        narrative_opts.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 6))
+        ttk.Label(narrative_opts, text="Language:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.varNarrativeLang = tk.StringVar(value="EN")
+        ttk.Radiobutton(narrative_opts, text="English", variable=self.varNarrativeLang, value="EN").grid(row=0, column=1, padx=(0, 10))
+        ttk.Radiobutton(narrative_opts, text="Français", variable=self.varNarrativeLang, value="FR").grid(row=0, column=2, padx=(0, 20))
+
+        self.txtNarrative = tk.Text(self.tabNarrative, wrap="word", font=("Courier New", 10), height=12)
+        self.txtNarrative.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        narrative_scroll = ttk.Scrollbar(self.tabNarrative, orient="vertical", command=self.txtNarrative.yview)
+        narrative_scroll.grid(row=2, column=1, sticky="ns")
+        self.txtNarrative.configure(yscrollcommand=narrative_scroll.set)
+
+        narrative_actions = ttk.Frame(self.tabNarrative)
+        narrative_actions.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Button(
+            narrative_actions, text="Generate Narrative",
+            command=self.on_generate_narrative, style="Primary.TButton",
+        ).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(
+            narrative_actions, text="Copy to Clipboard",
+            command=self._on_narrative_copy, style="Secondary.TButton",
+        ).grid(row=0, column=1)
+        ttk.Label(narrative_actions, textvariable=self.varNarrativeStatus).grid(row=0, column=2, padx=(12, 0))
 
         # Saisie d'interet panel
         self.tabSaisieInteret.columnconfigure(1, weight=1)
@@ -6510,10 +6565,9 @@ class AppBase:
             return True
         _access = {
             # BSO: no K138, no Saisie d'interet
-            "BSO":   {"Select Folder", "Saisie D'affaire", "Agenda"},
-            # Clerk: no Select Folder, no Saisie d'affaire
-            # Clerk sets case folder by dragging a file into the Agenda tab
-            "Clerk": {"Agenda", "K138", "Saisie d'interet"},
+            "BSO":   {"Select Folder", "Saisie D'affaire", "Agenda", "Narrative"},
+            # Clerk: can see and update Saisie D'affaire and Select Folder too
+            "Clerk": {"Select Folder", "Saisie D'affaire", "Agenda", "K138", "Saisie d'interet"},
         }
         return tab_name in _access.get(role, set())
 
@@ -6530,17 +6584,19 @@ class AppBase:
             "Saisie D'affaire": self.tabSaisieAffaire,
             "Agenda":           self.tabAgenda,
             "K138":             self.tabK138,
+            "Narrative":        self.tabNarrative,
             "Saisie d'interet": self.tabSaisieInteret,
         }
         try:
             for tab_name, tab_widget in _all_tabs.items():
                 if not self._role_allows_tab(tab_name):
                     self.tabs.tab(tab_widget, state="hidden")
-            # Clerk: Agenda is always visible; only force-select it on first call (startup).
+            # Clerk: Select Folder and Agenda are always visible; land on Select Folder at startup.
             if role == "Clerk":
+                self.tabs.tab(self.tabSelectFolder, state="normal")
                 self.tabs.tab(self.tabAgenda, state="normal")
                 if not getattr(self, "_clerk_initial_tab_set", False):
-                    self.tabs.select(self.tabAgenda)
+                    self.tabs.select(self.tabSelectFolder)
                     self._clerk_initial_tab_set = True
         except Exception:
             pass
@@ -6575,17 +6631,29 @@ class AppBase:
                     self.tabs.tab(self.tabAgenda,
                                   state="normal" if has_folder else "disabled")
 
+            # Select Folder — always enabled when role allows
+            if self._role_allows_tab("Select Folder"):
+                self.tabs.tab(self.tabSelectFolder, state="normal")
+
+            # Narrative — BSO/Supervisor, same availability as Agenda
+            if self._role_allows_tab("Narrative"):
+                self.tabs.tab(self.tabNarrative,
+                              state="normal" if has_folder else "disabled")
+
             # When no folder is selected, land on the correct default tab —
             # but only if the user isn't already on an allowed tab for their role.
             if not has_folder:
                 if role == "Clerk":
                     try:
                         current = self.tabs.select()
-                        clerk_tabs = {str(self.tabAgenda), str(self.tabK138), str(self.tabSaisieInteret)}
+                        clerk_tabs = {
+                            str(self.tabSelectFolder), str(self.tabSaisieAffaire),
+                            str(self.tabAgenda), str(self.tabK138), str(self.tabSaisieInteret),
+                        }
                         if current not in clerk_tabs:
-                            self.tabs.select(self.tabAgenda)
+                            self.tabs.select(self.tabSelectFolder)
                     except Exception:
-                        self.tabs.select(self.tabAgenda)
+                        self.tabs.select(self.tabSelectFolder)
                 elif self._role_allows_tab("Select Folder"):
                     self.tabs.select(self.tabSelectFolder)
         except Exception:
@@ -7368,7 +7436,17 @@ class AppBase:
             self.varInteretTemplate.set(template_xlsx.name)
         else:
             self.varInteretTemplate.set("Not found")
-            self.varInteretStatus.set("Missing Saisie d'interet template in Configurations folder.")
+            self.varInteretStatus.set(
+                "No Saisie d'intérêt template found.\n"
+                "Add an Excel file with 'saisie' and 'interet' in the name to your Configurations folder."
+            )
+            messagebox.showwarning(
+                "Missing Template",
+                "No Saisie d'intérêt Excel template found in the Configurations folder.\n\n"
+                "Add an Excel file with 'saisie' and 'interet' in its filename to:\n"
+                f"{self.state.templates_folder}",
+                parent=self.root,
+            )
             return
 
         try:
@@ -7573,6 +7651,77 @@ class AppBase:
         self._refresh_saisie_interet_status()
         self._apply_role_tab_visibility()   # always re-enforce role restrictions last
         self._refresh_instruction_feedback()
+
+    # ------------------------------------------------------------------ Narrative
+    def on_generate_narrative(self):
+        """Load Narrative template and fill with extracted case values."""
+        wd = self._resolve_working_dir()
+        if not wd:
+            messagebox.showwarning("Missing Case", "Select a case folder first.", parent=self.root)
+            return
+        if not self.state.templates_folder:
+            messagebox.showwarning("Missing Folder", "Select Configurations folder first.", parent=self.root)
+            return
+
+        # Find Narrative template in templates folder
+        lang = getattr(self, "varNarrativeLang", None)
+        lang_code = lang.get() if lang else "EN"
+        form_type = self.state.form_type or "Stupefiant-Others"
+
+        narrative_template = None
+        # Look for template matching language and form type
+        for candidate in self.state.templates_folder.iterdir() if self.state.templates_folder.exists() else []:
+            n = candidate.name.upper()
+            if "NARRATIVE" in n and candidate.suffix.lower() == ".txt":
+                narrative_template = candidate
+                break
+
+        template_text = ""
+        if narrative_template and narrative_template.exists():
+            try:
+                template_text = narrative_template.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                template_text = ""
+        else:
+            self.log("  ! No Narrative template (.txt) found in templates folder — showing blank.")
+
+        # Substitute placeholders with extracted values
+        if wd and self.state.saisie_pdf_file:
+            try:
+                case_paths = ensure_case_structure(wd, self.state.saisie_pdf_file)
+                base_vals = self._cached_k138_values(case_paths)
+                subs = {
+                    "$DESCRIPTION_FULL":  base_vals.get("description_item_full", "") or base_vals.get("description_item", ""),
+                    "$DESCRIPTION_SHORT": base_vals.get("description_item", ""),
+                    "$INVENTORY":         base_vals.get("description_inventory", ""),
+                    "$OFFICER":           base_vals.get("seizing_officer", ""),
+                    "$DATE":              base_vals.get("seizure_date_line", ""),
+                    "$LOCATION":          base_vals.get("lieu_interception", ""),
+                    "$DECLARED":          base_vals.get("description_declared", ""),
+                    "$SEIZURE_TYPE":      form_type,
+                    "$LANG":              lang_code,
+                }
+                for placeholder, value in subs.items():
+                    template_text = template_text.replace(placeholder, value or "")
+            except Exception as e:
+                self.log(f"  ! Narrative substitution error: {e}")
+
+        if hasattr(self, "txtNarrative"):
+            self.txtNarrative.delete("1.0", "end")
+            self.txtNarrative.insert("1.0", template_text)
+        if hasattr(self, "varNarrativeStatus"):
+            self.varNarrativeStatus.set("Generated." if template_text else "No template found.")
+
+    def _on_narrative_copy(self):
+        """Copy Narrative text to clipboard."""
+        if not hasattr(self, "txtNarrative"):
+            return
+        text = self.txtNarrative.get("1.0", "end").strip()
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            if hasattr(self, "varNarrativeStatus"):
+                self.varNarrativeStatus.set("Copied to clipboard.")
 
     def on_generate_saisie_interet(self):
         wd = self._resolve_working_dir()
@@ -7793,6 +7942,17 @@ class AppBase:
         self._set_busy(True, "Generating Agenda...")
         try:
             case_paths = ensure_case_structure(wd, self.state.saisie_pdf_file)
+
+            # Bug fix: detect existing Agenda before creating a new one.
+            existing_agenda = self._agenda_existing_path(case_paths)
+            if existing_agenda and existing_agenda.exists():
+                if not messagebox.askyesno(
+                    "Agenda Already Exists",
+                    f"An Agenda was already found:\n{existing_agenda.name}\n\nDo you want to regenerate it?",
+                    parent=self.root,
+                ):
+                    return
+
             cached_vals = read_values_latest_json(case_paths["values_latest_json"])
             base_vals = self._cached_k138_values(case_paths)
             inventory_number = _normalize_inventory_number(self.state.last_inventory_number or "")
@@ -8581,6 +8741,20 @@ class AppBase:
         self.state.form_type = self.form_type_var.get()
         self.log(f"Form type: {self.state.form_type}")
 
+    def _on_labo_changed(self):
+        """LABO checkbox toggled — paste 'LABO' into the notes field as AEADS (MTL) marker.
+        NOTE: Confirm with Dmitry which exact Saisie D'affaire field maps to AESD (mtl) box."""
+        if hasattr(self, "varSaisieAffaireFields") and "notes" in self.varSaisieAffaireFields:
+            if self.varCheckLabo.get():
+                current = self.varSaisieAffaireFields["notes"].get()
+                if "LABO" not in current.upper():
+                    self.varSaisieAffaireFields["notes"].set(("LABO  " + current).strip())
+            else:
+                current = self.varSaisieAffaireFields["notes"].get()
+                self.varSaisieAffaireFields["notes"].set(
+                    re.sub(r"LABO\s*", "", current, flags=re.IGNORECASE).strip()
+                )
+
     def on_process_pdf(self):
         """Process individual SAISIE input file (PDF, DOCX, image)."""
         # Validate templates folder
@@ -9066,8 +9240,8 @@ def _show_profile_splash() -> tuple:
     # Image file inside assets/
     AVATAR_IMAGES    = {
         "BSO":        "assets/avatar_bso.png",
-        "Clerk":      "assets/clerk.png",
-        "Supervisor": "assets/avatar_supervisor.png",
+        "Clerk":      "assets/avatar_clerk1.png",
+        "Supervisor": "assets/avatar_supervisor1.png",
     }
     ROLE_DESC = {
         "BSO":        "Working Folder\nSaisie d'affaire\nAgenda",

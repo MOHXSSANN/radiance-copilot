@@ -5955,20 +5955,32 @@ class AppBase:
             command=self.on_form_type_changed,
         ).grid(row=0, column=2, sticky="w")
 
+        # Consistent button order: [Generate] [Update] [Complete ✓] [X]
         saisie_actions = ttk.Frame(self.tabSaisieAffaire)
         saisie_actions.grid(row=4, column=0, sticky="w", padx=8, pady=(0, 4))
         ttk.Button(
             saisie_actions,
-            text="Update from Saisie D'affaire",
-            command=self.on_update_from_saisie_affaire,
-            style="Secondary.TButton",
-        ).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(
-            saisie_actions,
-            text="Generate Saisie D'affaire",
+            text="Generate",
             command=self.on_generate_saisie_affaire,
             style="Primary.TButton",
-        ).grid(row=0, column=1)
+        ).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(
+            saisie_actions,
+            text="Update",
+            command=self.on_update_from_saisie_affaire,
+            style="Secondary.TButton",
+        ).grid(row=0, column=1, padx=(0, 6))
+        self.varCompleteSaisie = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            saisie_actions, text="Complete ✓",
+            variable=self.varCompleteSaisie,
+            command=lambda: self._on_tab_complete_changed("saisie"),
+        ).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(
+            saisie_actions, text="✕",
+            command=lambda: self._on_tab_close("saisie"),
+            style="Secondary.TButton", width=3,
+        ).grid(row=0, column=3)
 
         saisie_found_row = ttk.Frame(self.tabSaisieAffaire)
         saisie_found_row.grid(row=5, column=0, sticky="w", padx=8, pady=(0, 8))
@@ -5995,12 +6007,26 @@ class AppBase:
         self.frmK138Actions = ttk.Frame(self.tabK138)
         self.frmK138Actions.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
         self.btnGenerateK138 = ttk.Button(
-            self.frmK138Actions,
-            text="Generate K138",
-            command=self.on_generate_k138,
-            style="Primary.TButton",
+            self.frmK138Actions, text="Generate",
+            command=self.on_generate_k138, style="Primary.TButton",
         )
-        self.btnGenerateK138.grid(row=0, column=0, padx=(0, 8))
+        self.btnGenerateK138.grid(row=0, column=0, padx=(0, 6))
+        self.btnUpdateK138 = ttk.Button(
+            self.frmK138Actions, text="Update",
+            command=self._on_refresh_agenda_from_pdf, style="Secondary.TButton",
+        )
+        self.btnUpdateK138.grid(row=0, column=1, padx=(0, 6))
+        self.varCompleteK138 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.frmK138Actions, text="Complete ✓",
+            variable=self.varCompleteK138,
+            command=lambda: self._on_tab_complete_changed("k138"),
+        ).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(
+            self.frmK138Actions, text="✕",
+            command=lambda: self._on_tab_close("k138"),
+            style="Secondary.TButton", width=3,
+        ).grid(row=0, column=3)
 
         # Agenda status panel
         self.tabAgenda.columnconfigure(1, weight=1)
@@ -6021,23 +6047,30 @@ class AppBase:
         btnAgendaRow = ttk.Frame(self.tabAgenda)
         btnAgendaRow.grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(10, 8))
         self.btnGenerateAgenda = ttk.Button(
-            btnAgendaRow,
-            text="Generate Agenda",
-            command=self.on_fill_agenda,
-            style="Primary.TButton",
+            btnAgendaRow, text="Generate",
+            command=self.on_fill_agenda, style="Primary.TButton",
         )
-        self.btnGenerateAgenda.grid(row=0, column=0, padx=(0, 8))
+        self.btnGenerateAgenda.grid(row=0, column=0, padx=(0, 6))
 
-        # Refresh button - re-reads agenda PDF, detects any edits made in PDF viewer,
-        # and regenerates the barcode if the inventory number changed.
+        # Update — re-reads Agenda PDF after manual officer edits, regenerates barcode
         self.btnRefreshAgenda = ttk.Button(
-            btnAgendaRow,
-            text="Update Values from Agenda",
+            btnAgendaRow, text="Update",
             command=self._on_refresh_agenda_from_pdf,
-            state="disabled",
-            style="Secondary.TButton",
+            state="disabled", style="Secondary.TButton",
         )
-        self.btnRefreshAgenda.grid(row=0, column=1, padx=(0, 8))
+        self.btnRefreshAgenda.grid(row=0, column=1, padx=(0, 6))
+
+        self.varCompleteAgenda = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            btnAgendaRow, text="Complete ✓",
+            variable=self.varCompleteAgenda,
+            command=lambda: self._on_tab_complete_changed("agenda"),
+        ).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(
+            btnAgendaRow, text="✕",
+            command=lambda: self._on_tab_close("agenda"),
+            style="Secondary.TButton", width=3,
+        ).grid(row=0, column=3, padx=(0, 8))
 
         # Clerk-only: select case folder to auto-load Saisie D'affaire and enable Agenda + K138
         self.btnClerkSelectAgenda = ttk.Button(
@@ -6046,7 +6079,7 @@ class AppBase:
             command=self.on_clerk_select_case_folder,
             style="Secondary.TButton",
         )
-        self.btnClerkSelectAgenda.grid(row=0, column=2, padx=(0, 8))
+        self.btnClerkSelectAgenda.grid(row=0, column=4, padx=(0, 8))
         # Show only for Clerk role; hidden for all others
         if getattr(self, "profile_role", "BSO") != "Clerk":
             self.btnClerkSelectAgenda.grid_remove()
@@ -6080,14 +6113,25 @@ class AppBase:
         narrative_actions = ttk.Frame(self.tabNarrative)
         narrative_actions.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Button(
-            narrative_actions, text="Generate Narrative",
+            narrative_actions, text="Generate",
             command=self.on_generate_narrative, style="Primary.TButton",
-        ).grid(row=0, column=0, padx=(0, 8))
+        ).grid(row=0, column=0, padx=(0, 6))
         ttk.Button(
             narrative_actions, text="Copy to Clipboard",
             command=self._on_narrative_copy, style="Secondary.TButton",
-        ).grid(row=0, column=1)
-        ttk.Label(narrative_actions, textvariable=self.varNarrativeStatus).grid(row=0, column=2, padx=(12, 0))
+        ).grid(row=0, column=1, padx=(0, 6))
+        self.varCompleteNarrative = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            narrative_actions, text="Complete ✓",
+            variable=self.varCompleteNarrative,
+            command=lambda: self._on_tab_complete_changed("narrative"),
+        ).grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(
+            narrative_actions, text="✕",
+            command=lambda: self._on_tab_close("narrative"),
+            style="Secondary.TButton", width=3,
+        ).grid(row=0, column=3, padx=(0, 8))
+        ttk.Label(narrative_actions, textvariable=self.varNarrativeStatus).grid(row=0, column=4, padx=(6, 0))
 
         # Saisie d'interet panel
         self.tabSaisieInteret.columnconfigure(1, weight=1)
@@ -8740,6 +8784,85 @@ class AppBase:
     def on_form_type_changed(self):
         self.state.form_type = self.form_type_var.get()
         self.log(f"Form type: {self.state.form_type}")
+
+    def _on_tab_complete_changed(self, tab: str):
+        """Mark a tab as complete — lock (read-only) or unlock the associated PDF."""
+        import stat as _stat
+        var_map = {
+            "saisie":    getattr(self, "varCompleteSaisie",    None),
+            "agenda":    getattr(self, "varCompleteAgenda",    None),
+            "k138":      getattr(self, "varCompleteK138",      None),
+            "narrative": getattr(self, "varCompleteNarrative", None),
+        }
+        var = var_map.get(tab)
+        is_complete = var.get() if var else False
+
+        pdf = self._resolve_tab_pdf(tab)
+        if pdf and pdf.exists():
+            try:
+                if is_complete:
+                    # Remove write permission — lock PDF for editing
+                    current = pdf.stat().st_mode
+                    pdf.chmod(current & ~(_stat.S_IWRITE | _stat.S_IWGRP | _stat.S_IWOTH))
+                    self.log(f"  ✓ {tab.capitalize()} marked complete — PDF locked: {pdf.name}")
+                else:
+                    # Restore write permission
+                    current = pdf.stat().st_mode
+                    pdf.chmod(current | _stat.S_IWRITE)
+                    self.log(f"  i {tab.capitalize()} re-opened — PDF unlocked: {pdf.name}")
+            except Exception as e:
+                self.log(f"  ! Could not change PDF permissions: {e}")
+        else:
+            status = "complete" if is_complete else "in progress"
+            self.log(f"  i {tab.capitalize()} marked {status} (no PDF found to lock)")
+
+        # Persist complete state in values JSON
+        wd = self._resolve_working_dir()
+        if wd and self.state.saisie_pdf_file:
+            try:
+                case_paths = ensure_case_structure(wd, self.state.saisie_pdf_file)
+                update_values_latest_json(case_paths["values_latest_json"], {
+                    f"complete_{tab}": is_complete,
+                    "updated_at": _timestamp_iso(),
+                })
+            except Exception:
+                pass
+
+    def _on_tab_close(self, tab: str):
+        """[X] button — uncheck Complete and clear the tab's status/output fields."""
+        var_map = {
+            "saisie":    getattr(self, "varCompleteSaisie",    None),
+            "agenda":    getattr(self, "varCompleteAgenda",    None),
+            "k138":      getattr(self, "varCompleteK138",      None),
+            "narrative": getattr(self, "varCompleteNarrative", None),
+        }
+        var = var_map.get(tab)
+        if var:
+            if var.get():
+                var.set(False)
+                self._on_tab_complete_changed(tab)   # unlock PDF
+        self.log(f"  i {tab.capitalize()} tab reset.")
+
+    def _resolve_tab_pdf(self, tab: str) -> Optional[Path]:
+        """Return the output PDF path for the given tab, or None if not available."""
+        wd = self._resolve_working_dir()
+        if not wd or not self.state.saisie_pdf_file:
+            return None
+        try:
+            case_paths = ensure_case_structure(wd, self.state.saisie_pdf_file)
+            if tab == "saisie":
+                active = self._active_case_folder_path()
+                if active:
+                    pdfs = sorted(active.glob("*Saisie_D_affaire.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    return pdfs[0] if pdfs else None
+            elif tab == "agenda":
+                return self._agenda_existing_path(case_paths)
+            elif tab == "k138":
+                p = case_paths.get("client_k138_pdf")
+                return p if p and p.exists() else None
+        except Exception:
+            pass
+        return None
 
     def _on_labo_changed(self):
         """LABO checkbox toggled — paste 'LABO' into the notes field as AEADS (MTL) marker.
